@@ -1,0 +1,140 @@
+name: Terragrunt Workflow Template
+
+on:
+  workflow_call:
+    inputs:
+      action:
+        description: "plan | apply"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  TG_ALL: true
+  TG_LOG_LEVEL: error
+  TG_NON_INTERACTIVE: true
+  # TG_PARALLELISM: 1 // Check if it needed, sometimes with PostgreSQL Backend cause issues with concurrency
+  TF_STRICT_MODE: true
+  TG_WORKING_DIR: ./iac
+  TG_VERSION: v0.85.0
+  TOFU_VERSION: v1.10.5
+  VAULT_VERSION: v1.20.2
+  VAULT_HELPER_VERSION: main
+  VAULT_ADDR: ${{ secrets.VAULT_ADDR }}
+  VAULT_AGENT_CONFIG: ${{ vars.VAULT_AGENT_CONFIG }}
+  VAULT_CLIENT_ID: ${{ secrets.VAULT_CLIENT_ID }}
+  VAULT_SECRET_ID: ${{ secrets.VAULT_SECRET_ID }}
+
+jobs:
+  validate_input:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate action input
+        run: |
+          if [[ "${{ inputs.action }}" != "plan" && "${{ inputs.action }}" != "apply" ]]; then
+            echo "Invalid action: ${{ inputs.action }}"
+            exit 1
+          fi
+
+  terragrunt:
+    needs:
+      - validate_input
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.action == 'apply' && format('refs/pull/{0}/merge', github.event.issue.number) || github.ref }}
+
+      - name: Install terragrunt
+        uses: gruntwork-io/terragrunt-action@v3
+        with:
+          tg_version: ${{ env.TG_VERSION }}
+          tofu_version: ${{ env.TOFU_VERSION }}
+
+      - name: Install Vault
+        uses: eLco/setup-vault@v1
+        with:
+          vault_version: ${{ env.VAULT_VERSION }}
+
+      - name: Build VAULT HELPER URL
+        run: |
+          echo "VAULT_HELPER_URL=https://raw.githubusercontent.com/proxmox-home-lab/.github/${VAULT_HELPER_VERSION}/vault-helper.sh" >> "$GITHUB_ENV"
+
+      - name: Run terragrunt validate
+        if: ${{ inputs.action == 'plan' }}
+        run: |
+          source <(curl -s "$VAULT_HELPER_URL")
+          terragrunt run validate
+
+      - name: Run terragrunt plan
+        if: ${{ inputs.action == 'plan' }}
+        id: terragrunt_plan
+        run: |
+          source <(curl -s "$VAULT_HELPER_URL")
+          terragrunt run plan
+
+      - name: Get step URL for terragrunt action
+        if: ${{ always() && (inputs.action == 'plan' || inputs.action == 'apply') }}
+        id: get_step_url
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ "${{ inputs.action }}" == "plan" ]]; then
+            step_name="Run terragrunt plan"
+          else
+            step_name="Run terragrunt apply"
+          fi
+          step_url=$(gh run --repo ${{ github.repository }} view ${{ github.run_id }} --json jobs --jq '.jobs[] | select(.name | contains("${{ github.job }}")) | .url, (.steps[] | select(.name == "'"$step_name"'") | "#step:\(.number):1")' | tr -d "\n")
+          echo "step_url=${step_url}" >> $GITHUB_OUTPUT
+
+      - name: PR Comment for Plan
+        if: ${{ inputs.action == 'plan' }}
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          body: |
+            <!-- Terragrunt PR Comment -->
+            ## Terragrunt Plan
+            Step URL: ${{ steps.get_step_url.outputs.step_url }}
+
+      - name: Create GitHub App token
+        if: ${{ inputs.action == 'apply' }}
+        id: create_token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.GH_APP_ID }}
+          private-key: ${{ secrets.GH_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          github-api-url: ${{ github.api_url }}
+
+      - uses: github/command@v2
+        if: ${{ inputs.action == 'apply' }}
+        id: command
+        with:
+          command: .apply
+          reaction: rocket
+          allowed_contexts: "pull_request"
+          allowlist: "${{ github.repository_owner }}/apply-approvers"
+          allowlist_pat: ${{ steps.create_token.outputs.token }}
+
+      - name: Run terragrunt apply
+        if: ${{ (inputs.action == 'apply' && steps.command.outputs.continue) }}
+        id: terragrunt_apply
+        run: |
+          source <(curl -s "$VAULT_HELPER_URL")
+          terragrunt run apply
+
+      - name: PR Comment for Apply
+        if: ${{ inputs.action == 'apply' && always() }}
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          issue-number: ${{ github.event.pull_request.number || github.event.issue.number }}
+          body: |
+            <!-- Terragrunt PR Comment -->
+            ## Terragrunt Apply
+            ${{ steps.terragrunt_apply.outcome == 'success' && 'Terragrunt apply completed successfully. ✅' || 'Terragrunt apply failed. ❌' }}
+            Step URL: ${{ steps.get_step_url.outputs.step_url }}
