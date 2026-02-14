@@ -75,7 +75,8 @@ jobs:
         id: terragrunt_plan
         run: |
           source <(curl -s "$VAULT_HELPER_URL")
-          terragrunt run plan
+          mkdir -p artifacts
+          terragrunt run plan 2>&1 | tee plan.log
 
       - name: Get step URL for terragrunt action
         if: ${{ always() && (inputs.action == 'plan' || inputs.action == 'apply') }}
@@ -91,6 +92,13 @@ jobs:
           step_url=$(gh run --repo ${{ github.repository }} view ${{ github.run_id }} --json jobs --jq '.jobs[] | select(.name | contains("${{ github.job }}")) | .url, (.steps[] | select(.name == "'"$step_name"'") | "#step:\(.number):1")' | tr -d "\n")
           echo "step_url=${step_url}" >> $GITHUB_OUTPUT
 
+      - name: Summarize terragrunt plan
+        if: ${{ inputs.action == 'plan' }}
+        id: plan_summarize
+        uses: proxmox-home-lab/.github/actions/tg-summarize@main
+        with:
+          log_path: plan.log
+
       - name: PR Comment for Plan
         if: ${{ inputs.action == 'plan' }}
         uses: peter-evans/create-or-update-comment@v4
@@ -98,7 +106,7 @@ jobs:
           issue-number: ${{ github.event.pull_request.number }}
           body: |
             <!-- Terragrunt PR Comment -->
-            ## Terragrunt Plan
+            ${{ steps.plan_summarize.outputs.summary }}
             Step URL: ${{ steps.get_step_url.outputs.step_url }}
 
       - name: Create GitHub App token
@@ -126,7 +134,14 @@ jobs:
         id: terragrunt_apply
         run: |
           source <(curl -s "$VAULT_HELPER_URL")
-          terragrunt run apply
+          terragrunt run apply 2>&1 | tee apply.log
+
+      - name: Summarize terragrunt apply
+        if: ${{ inputs.action == 'apply' }}
+        id: apply_summarize
+        uses: proxmox-home-lab/.github/actions/tg-summarize@main
+        with:
+          log_path: apply.log
 
       - name: PR Comment for Apply
         if: ${{ inputs.action == 'apply' && always() }}
@@ -135,6 +150,6 @@ jobs:
           issue-number: ${{ github.event.pull_request.number || github.event.issue.number }}
           body: |
             <!-- Terragrunt PR Comment -->
-            ## Terragrunt Apply
+            ${{ steps.apply_summarize.outputs.summary }}
             ${{ steps.terragrunt_apply.outcome == 'success' && 'Terragrunt apply completed successfully. ✅' || 'Terragrunt apply failed. ❌' }}
             Step URL: ${{ steps.get_step_url.outputs.step_url }}
