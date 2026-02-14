@@ -153,3 +153,13 @@ jobs:
             ${{ steps.apply_summarize.outputs.summary }}
             ${{ steps.terragrunt_apply.outcome == 'success' && 'Terragrunt apply completed successfully. ✅' || 'Terragrunt apply failed. ❌' }}
             Step URL: ${{ steps.get_step_url.outputs.step_url }}
+
+      - name: Merge PR
+        if: ${{ inputs.action == 'apply' && steps.terragrunt_apply.outcome == 'success' && github.ref != 'refs/heads/test' }}
+        uses: proxmox-home-lab/github-actions/.github/actions/merge-pr@main
+        with:
+          gh-host: ${{ vars.GH_HOST_FQDN }}
+          pr-number: ${{ github.event.issue.number }}
+          merge-method: merge
+          delete-branch: true
+          commit-message: "[AUTO] ${{ github.event.issue.title }}"

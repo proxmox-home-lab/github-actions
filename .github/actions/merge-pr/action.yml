@@ -1,0 +1,43 @@
+name: Merge PR with GitHub CLI
+description: Merge a pull request using the GitHub CLI.
+
+inputs:
+  gh-token:
+    description: GitHub token to authenticate with the GitHub API.
+    required: false
+    default: ${{ github.token }}
+
+  pr-number:
+    description: The pull request number to merge. If not provided, it will be determined from the current context.
+    required: true
+
+  merge-method:
+    description: The method to use for merging the pull request (e.g., "merge", "squash", "rebase").
+    required: true
+    default: squash
+
+  delete-branch:
+    description: Whether to delete the branch after merging.
+    required: false
+    default: "true"
+
+  commit-message:
+    description: The commit message to use for the merge commit.
+    required: true
+
+runs:
+  using: "composite"
+  steps:
+    - name: Merge Pull Request
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.gh-token }}
+        PR_NUMBER: ${{ inputs.pr-number }}
+        MERGE_METHOD: ${{ inputs.merge-method }}
+        COMMIT_MESSAGE: ${{ inputs.commit-message }}
+        DELETE_BRANCH: ${{ inputs.delete-branch }}
+      run: |
+        gh pr merge "$PR_NUMBER" \
+          --$MERGE_METHOD \
+          --body "$COMMIT_MESSAGE" \
+          $([ "$DELETE_BRANCH" == "true" ] && echo "--delete-branch")
