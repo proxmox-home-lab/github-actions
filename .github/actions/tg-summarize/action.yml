@@ -1,5 +1,5 @@
 name: "Terragrunt Plan/Apply Summarize"
-description: "Extract only STDOUT/WARN/ERROR terraform lines, strip ANSI, and emit a compact per-unit plan/apply summary (with optional details)."
+description: "Extract only STDOUT/WARN/ERROR terraform/tofu lines, strip ANSI, and emit a compact per-unit plan/apply summary (with optional details)."
 
 inputs:
   log_path:
@@ -30,8 +30,9 @@ runs:
         log_path = Path("${{ inputs.log_path }}")
         limit = int("${{ inputs.max_chars }}")
 
-        # Only STDOUT/WARN/ERROR + strip ANSI
-        rx = re.compile(r'^(STDOUT|WARN|ERROR)\s+\[(?P<unit>[^\]]+)\]\s+terraform:\s?(?P<msg>.*)$')
+        rx = re.compile(
+          r'^(STDOUT|WARN|ERROR)\s+\[(?P<unit>[^\]]+)\]\s+(?:terraform|tofu):\s?(?P<msg>.*)$'
+        )
         ansi = re.compile(r'\x1b\[[0-9;]*m')
 
         units = {}
@@ -55,15 +56,20 @@ runs:
           return s[: max(0, n - 13)] + "\n[TRUNCATED]\n"
 
         def extract_plan_details(text: str, summary_line: str) -> str:
-          start = text.find("Terraform will perform the following actions:")
+          start_tf = text.find("Terraform will perform the following actions:")
+          start_tofu = text.find("OpenTofu will perform the following actions:")
+          start = start_tf if start_tf != -1 else start_tofu
+
           end = text.find(summary_line)
           if start != -1 and end != -1 and end > start:
             return text[start:end].strip()
           return ""
 
         def extract_apply_details(text: str, summary_line: str) -> str:
-          # If the "will perform" block is present in filtered lines, keep it; otherwise skip.
-          start = text.find("Terraform will perform the following actions:")
+          start_tf = text.find("Terraform will perform the following actions:")
+          start_tofu = text.find("OpenTofu will perform the following actions:")
+          start = start_tf if start_tf != -1 else start_tofu
+
           end = text.find(summary_line)
           if start != -1 and end != -1 and end > start:
             return text[start:end].strip()
@@ -101,7 +107,7 @@ runs:
         lines = ["## Terragrunt summary\n"]
 
         if not units:
-          lines.append("> No STDOUT/WARN/ERROR terraform lines detected. Ensure the log contains lines like `STDOUT [unit] terraform: ...`.")
+          lines.append("> No STDOUT/WARN/ERROR terraform/tofu lines detected. Ensure the log contains lines like `STDOUT [unit] terraform: ...` or `STDOUT [unit] tofu: ...`.")
         else:
           for unit in sorted(units.keys()):
             short = unit.split("/")[-1]
