@@ -31,7 +31,8 @@ runs:
         limit = int("${{ inputs.max_chars }}")
 
         rx = re.compile(
-          r'^(STDOUT|WARN|ERROR)\s+\[(?P<unit>[^\]]+)\]\s+(?:terraform|tofu):\s?(?P<msg>.*)$'
+          r'^(?:\d{2}:\d{2}:\d{2}\.\d+\s+)?'
+          r'(STDOUT|WARN|ERROR)\s+\[(?P<unit>[^\]]+)\]\s+(?:terraform|tofu):\s?(?P<msg>.*)$'
         )
         ansi = re.compile(r'\x1b\[[0-9;]*m')
 
@@ -59,7 +60,6 @@ runs:
           start_tf = text.find("Terraform will perform the following actions:")
           start_tofu = text.find("OpenTofu will perform the following actions:")
           start = start_tf if start_tf != -1 else start_tofu
-
           end = text.find(summary_line)
           if start != -1 and end != -1 and end > start:
             return text[start:end].strip()
@@ -69,7 +69,6 @@ runs:
           start_tf = text.find("Terraform will perform the following actions:")
           start_tofu = text.find("OpenTofu will perform the following actions:")
           start = start_tf if start_tf != -1 else start_tofu
-
           end = text.find(summary_line)
           if start != -1 and end != -1 and end > start:
             return text[start:end].strip()
@@ -107,7 +106,7 @@ runs:
         lines = ["## Terragrunt summary\n"]
 
         if not units:
-          lines.append("> No STDOUT/WARN/ERROR terraform/tofu lines detected. Ensure the log contains lines like `STDOUT [unit] terraform: ...` or `STDOUT [unit] tofu: ...`.")
+          lines.append("> No STDOUT/WARN/ERROR terraform/tofu lines detected. Ensure the log contains lines like `15:45:34.412 STDOUT [unit] tofu: ...` or `STDOUT [unit] terraform: ...`.")
         else:
           for unit in sorted(units.keys()):
             short = unit.split("/")[-1]
