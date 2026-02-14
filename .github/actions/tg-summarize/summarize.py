@@ -4,10 +4,23 @@ import sys
 from pathlib import Path
 
 log_path = Path(sys.argv[1])
-limit = int(sys.argv[2])
+mode = sys.argv[2].strip().lower()
+step_url = sys.argv[3].strip()
+run_outcome = sys.argv[4].strip().lower()
+limit = int(sys.argv[5])
+
+if mode not in ("plan", "apply"):
+    mode = "plan"
+
+MODE_ICON = {"plan": "📋", "apply": "🚀"}
+mode_icon = MODE_ICON[mode]
+mode_label = mode.upper()
 
 ansi = re.compile(r'\x1b\[[0-9;]*m')
 
+# Matches:
+# 15:45:34.412 STDOUT [unit] tofu: message
+# 15:45:34.412 WARN   [unit] terraform: message
 rx = re.compile(
     r'^(?:\d{2}:\d{2}:\d{2}\.\d+\s+)?'
     r'(STDOUT|WARN|ERROR)\s+\[(?P<unit>[^\]]+)\]\s+(?:terraform|tofu):\s?(?P<msg>.*)$'
@@ -36,7 +49,6 @@ def extract_plan_block(text: str, summary_line: str) -> str:
         return text[start:end].strip()
     return ""
 
-# status lines we want to keep (ordered)
 STATUS_PATTERNS = [
     re.compile(r'^Acquiring state lock\. This may take a few moments\.\.\.$'),
     re.compile(r'.*: Refreshing state\.\.\. \[id=.*\]$'),
@@ -45,31 +57,27 @@ STATUS_PATTERNS = [
     re.compile(r'^Apply complete!\s+Resources:\s+\d+\s+added,\s+\d+\s+changed,\s+\d+\s+destroyed\.$'),
 ]
 
-def extract_status_lines(entries, max_lines=12) -> str:
-    """Pick a small, useful subset of operational lines (lock/refresh/modify/apply)."""
+def extract_status_lines(entries, max_lines=18) -> str:
     picked = []
     seen = set()
-
     for _, msg in entries:
         msg = msg.strip()
         if not msg:
             continue
         for pat in STATUS_PATTERNS:
             if pat.match(msg):
-                # de-dup exact lines (helps with repeated refresh/apply blanks)
                 if msg not in seen:
                     seen.add(msg)
                     picked.append(msg)
                 break
         if len(picked) >= max_lines:
             break
-
     return "\n".join(picked).strip()
 
 # Parse per-unit entries
 units = {}
 for ln in log_path.read_text(errors="ignore").splitlines():
-    ln = ansi.sub('', ln)
+    ln = ansi.sub('', ln)  # ✅ strip ANSI from full line first
     m = rx.match(ln)
     if not m:
         continue
@@ -83,12 +91,18 @@ def summarize_unit(entries):
     warn_err = extract_warn_err(entries)
     status = extract_status_lines(entries)
 
-    # Primary summary
-    if "No changes. Your infrastructure matches the configuration." in text:
-        # If apply run, you might still have "Apply complete! 0 changed" etc.
+    if mode == "apply":
         m_apply = apply_rx.search(text)
         if m_apply:
-            return ("✅", m_apply.group(1), "", status, warn_err)
+            return ("🚀", m_apply.group(1), "", status, warn_err)
+        if "No changes. Your infrastructure matches the configuration." in text:
+            return ("✅", "No changes", "", status, warn_err)
+        if warn_err:
+            return ("⚠️", warn_err.splitlines()[0][:200], "", status, warn_err)
+        return ("⚠️", "No apply summary found", "", status, warn_err)
+
+    # plan
+    if "No changes. Your infrastructure matches the configuration." in text:
         return ("✅", "No changes", "", status, warn_err)
 
     m_plan = plan_rx.search(text)
@@ -97,22 +111,34 @@ def summarize_unit(entries):
         plan_block = extract_plan_block(text, summary)
         return ("✏️", summary, plan_block, status, warn_err)
 
-    m_apply = apply_rx.search(text)
-    if m_apply:
-        summary = m_apply.group(1)
-        # Plan block sometimes appears in apply logs as well (like in your sample)
-        plan_block = extract_plan_block(text, summary)
-        return ("🚀", summary, plan_block, status, warn_err)
-
     if warn_err:
-        first = warn_err.splitlines()[0][:200]
-        return ("⚠️", first, "", status, warn_err)
+        return ("⚠️", warn_err.splitlines()[0][:200], "", status, warn_err)
 
-    return ("⚠️", "No summary found", "", status, warn_err)
+    return ("⚠️", "No plan summary found", "", status, warn_err)
+
+def final_apply_status_line():
+    if mode != "apply":
+        return ""
+    if run_outcome == "success":
+        return "✅ Apply finished successfully"
+    if run_outcome == "failure":
+        return "❌ Apply failed"
+    if run_outcome == "cancelled":
+        return "⛔ Apply cancelled"
+    if run_outcome == "skipped":
+        return "⏭️ Apply skipped"
+    return ""
 
 # Build Markdown
 lines = []
-lines.append("## Terragrunt summary\n")
+lines.append(f"## {mode_icon} Terragrunt {mode_label} summary\n")
+
+final_status = final_apply_status_line()
+if final_status:
+    lines.append(f"**Result:** {final_status}\n")
+
+if step_url:
+    lines.append(f"**Step URL:** {step_url}\n")
 
 if not units:
     lines.append("> No STDOUT/WARN/ERROR terraform/tofu lines detected.\n")
@@ -130,30 +156,41 @@ else:
 
     lines.append("")
 
-    # Details blocks
     for short, (icon, summary, plan_block, status, warn_err) in per_unit.items():
-        if not plan_block and not warn_err and not status:
+        show_any = bool(status or warn_err or (mode == "plan" and plan_block))
+        if not show_any:
             continue
 
         lines.append(f"<details><summary><b>{icon} {short}</b></summary>\n")
 
-        if status:
-            lines.append("#### Status")
-            lines.append("```text")
-            lines.append(clip(status, 3000).rstrip())
-            lines.append("```\n")
+        if mode == "plan":
+            # ✅ merge status + warnings + plan changes into one details body
+            merged_parts = []
+            if status:
+                merged_parts.append(status)
+            if warn_err:
+                merged_parts.append("Warnings/Errors:\n" + warn_err)
+            if plan_block:
+                merged_parts.append(plan_block)
 
-        if warn_err:
-            lines.append("#### Warnings/Errors")
-            lines.append("```text")
-            lines.append(clip(warn_err, 4000).rstrip())
-            lines.append("```\n")
+            merged = "\n\n".join(p for p in merged_parts if p).strip()
+            if merged:
+                lines.append("```diff")
+                lines.append(clip(merged, 16000).rstrip())
+                lines.append("```\n")
+        else:
+            # ✅ apply: only status + warnings, no plan changes
+            body_parts = []
+            if status:
+                body_parts.append(status)
+            if warn_err:
+                body_parts.append("Warnings/Errors:\n" + warn_err)
 
-        if plan_block:
-            lines.append("#### Plan / Changes")
-            lines.append("```diff")
-            lines.append(clip(plan_block, 12000).rstrip())
-            lines.append("```\n")
+            body = "\n\n".join(p for p in body_parts if p).strip()
+            if body:
+                lines.append("```text")
+                lines.append(clip(body, 8000).rstrip())
+                lines.append("```\n")
 
         lines.append("</details>\n")
 

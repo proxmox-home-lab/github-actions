@@ -64,18 +64,20 @@ jobs:
         run: |
           echo "VAULT_HELPER_URL=https://raw.githubusercontent.com/proxmox-home-lab/.github/${VAULT_HELPER_VERSION}/vault-helper.sh" >> "$GITHUB_ENV"
 
+      - name: Load secrets from Vault
+        run: |
+          source <(curl -s "$VAULT_HELPER_URL")
+          env
+      
       - name: Run terragrunt validate
         if: ${{ inputs.action == 'plan' }}
         run: |
-          source <(curl -s "$VAULT_HELPER_URL")
           terragrunt run validate
 
       - name: Run terragrunt plan
         if: ${{ inputs.action == 'plan' }}
         id: terragrunt_plan
         run: |
-          source <(curl -s "$VAULT_HELPER_URL")
-          mkdir -p artifacts
           terragrunt run plan 2>&1 | tee plan.log
 
       - name: Get step URL for terragrunt action
@@ -98,6 +100,12 @@ jobs:
         uses: proxmox-home-lab/github-actions/.github/actions/tg-summarize@main
         with:
           log_path: plan.log
+          mode: plan
+          run_outcome: ${{ steps.terragrunt_plan.outcome }}
+          github_token: ${{ github.token }}
+          repo: ${{ github.repository }}
+          run_id: ${{ github.run_id }}
+          job_name: ${{ github.job }}
 
       - name: PR Comment for Plan
         if: ${{ inputs.action == 'plan' }}
@@ -107,7 +115,6 @@ jobs:
           body: |
             <!-- Terragrunt PR Comment -->
             ${{ steps.plan_summarize.outputs.summary }}
-            Step URL: ${{ steps.get_step_url.outputs.step_url }}
 
       - name: Create GitHub App token
         if: ${{ inputs.action == 'apply' }}
@@ -133,7 +140,6 @@ jobs:
         if: ${{ (inputs.action == 'apply' && steps.command.outputs.continue) }}
         id: terragrunt_apply
         run: |
-          source <(curl -s "$VAULT_HELPER_URL")
           terragrunt run apply 2>&1 | tee apply.log
 
       - name: Summarize terragrunt apply
@@ -142,6 +148,12 @@ jobs:
         uses: proxmox-home-lab/github-actions/.github/actions/tg-summarize@main
         with:
           log_path: apply.log
+          mode: apply
+          run_outcome: ${{ steps.terragrunt_apply.outcome }}
+          github_token: ${{ github.token }}
+          repo: ${{ github.repository }}
+          run_id: ${{ github.run_id }}
+          job_name: ${{ github.job }}
 
       - name: PR Comment for Apply
         if: ${{ inputs.action == 'apply' && always() }}
@@ -151,14 +163,12 @@ jobs:
           body: |
             <!-- Terragrunt PR Comment -->
             ${{ steps.apply_summarize.outputs.summary }}
-            ${{ steps.terragrunt_apply.outcome == 'success' && 'Terragrunt apply completed successfully. ✅' || 'Terragrunt apply failed. ❌' }}
-            Step URL: ${{ steps.get_step_url.outputs.step_url }}
 
       - name: Merge PR
         if: ${{ inputs.action == 'apply' && steps.terragrunt_apply.outcome == 'success' && github.ref != 'refs/heads/test' }}
         uses: proxmox-home-lab/github-actions/.github/actions/merge-pr@main
         with:
-          gh-host: ${{ vars.GH_HOST_FQDN }}
+          gh-token: ${{ steps.create_token.outputs.token }}
           pr-number: ${{ github.event.issue.number }}
           merge-method: merge
           delete-branch: true

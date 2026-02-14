@@ -1,25 +1,96 @@
 name: "Terragrunt Plan/Apply Summarize"
-description: "Extract only STDOUT/WARN/ERROR terraform/tofu lines and emit summary."
+description: "Summarize Terragrunt plan/apply output (Terraform/OpenTofu): compute step URL, strip ANSI, extract per-unit summary + details."
 
 inputs:
   log_path:
+    description: "Path to terragrunt plan/apply log file captured with tee."
     required: true
+
+  mode:
+    description: "Execution mode: plan | apply"
+    required: true
+
+  run_outcome:
+    description: "Outcome of terragrunt execution step (success|failure|cancelled|skipped). Used to print final apply status."
+    required: false
+    default: ""
+
+  github_token:
+    description: "GitHub token with permissions to read the current run (use github.token)."
+    required: true
+
+  repo:
+    description: "Repository in owner/name form (use github.repository)."
+    required: true
+
+  run_id:
+    description: "Run id (use github.run_id)."
+    required: true
+
+  job_name:
+    description: "Current job name (use github.job)."
+    required: true
+
+  plan_step_name:
+    description: "Exact step name to link for plan."
+    required: false
+    default: "Run terragrunt plan"
+
+  apply_step_name:
+    description: "Exact step name to link for apply."
+    required: false
+    default: "Run terragrunt apply"
+
   max_chars:
+    description: "Max characters allowed for the final summary output."
     required: false
     default: "60000"
 
 outputs:
   summary:
-    value: ${{ steps.export.outputs.summary }}
+    value: ${{ steps.summarize.outputs.summary }}
+  step_url:
+    value: ${{ steps.stepurl.outputs.step_url }}
 
 runs:
   using: "composite"
   steps:
-    - name: Run summarize script
-      id: export
+    - name: Compute step URL
+      id: stepurl
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+      run: |
+        set -euo pipefail
+
+        if [[ "${{ inputs.mode }}" == "plan" ]]; then
+          step_name="${{ inputs.plan_step_name }}"
+        else
+          step_name="${{ inputs.apply_step_name }}"
+        fi
+
+        step_url=$(
+          gh run --repo "${{ inputs.repo }}" view "${{ inputs.run_id }}" --json jobs --jq \
+          '.jobs[]
+           | select(.name | contains("${{ inputs.job_name }}"))
+           | .url, (.steps[] | select(.name == "'"$step_name"'") | "#step:\(.number):1")' \
+          | tr -d "\n"
+        )
+
+        if [[ -z "$step_url" ]]; then
+          step_url="(step url not found)"
+        fi
+
+        echo "step_url=$step_url" >> "$GITHUB_OUTPUT"
+
+    - name: Summarize log
+      id: summarize
       shell: bash
       run: |
         set -euo pipefail
         python3 "${{ github.action_path }}/summarize.py" \
           "${{ inputs.log_path }}" \
+          "${{ inputs.mode }}" \
+          "${{ steps.stepurl.outputs.step_url }}" \
+          "${{ inputs.run_outcome }}" \
           "${{ inputs.max_chars }}" >> "$GITHUB_OUTPUT"
