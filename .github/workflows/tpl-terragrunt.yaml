@@ -121,8 +121,8 @@ jobs:
         id: create_token
         uses: actions/create-github-app-token@v1
         with:
-          app-id: ${{ env.GITHUB_APP_ID }}
-          private-key: ${{ env.GITHUB_APP_PRIVATE_KEY }}
+          app-id: ${{ env.GITHUB_APP_INSTALLATION_ID }}
+          private-key: ${{ env.GITHUB_APP_PEM_FILE }}
           owner: ${{ github.repository_owner }}
           github-api-url: ${{ github.api_url }}
 
