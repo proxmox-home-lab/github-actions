@@ -164,23 +164,24 @@ jobs:
             <!-- Terragrunt PR Comment -->
             ${{ steps.apply_summarize.outputs.summary }}
 
-      - name: Get PR source branch
+      - name: Get PR base branch
         if: ${{ inputs.action == 'apply' }}
         id: pr_base
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           pr="${{ github.event.pull_request.number || github.event.issue.number }}"
-          head_ref="$(gh pr view "$pr" --repo "${{ github.repository }}" --json headRefName -q '.headRefName')"
-          echo "head_ref=$head_ref" >> "$GITHUB_OUTPUT"
-          echo "Source branch is: $head_ref"
+          base_ref="$(gh pr view "$pr" --repo "${{ github.repository }}" --json baseRefName -q '.baseRefName')"
+          echo "base_ref=$base_ref" >> "$GITHUB_OUTPUT"
+          echo "Base branch is: $base_ref"
 
       - name: Merge PR
-        if: ${{ inputs.action == 'apply' && steps.terragrunt_apply.outcome == 'success' && github.ref != steps.pr_base.outputs.head_ref }}
+        if: ${{ inputs.action == 'apply' && steps.terragrunt_apply.outcome == 'success' && steps.pr_base.outputs.base_ref != 'test' }}
         uses: proxmox-home-lab/github-actions/.github/actions/merge-pr@main
         with:
           gh-token: ${{ steps.create_token.outputs.token }}
-          pr-number: ${{ github.event.issue.number }}
+          pr-number: ${{ github.event.pull_request.number || github.event.issue.number }}
           merge-method: merge
           delete-branch: true
           commit-message: "[AUTO] ${{ github.event.issue.title }}"
