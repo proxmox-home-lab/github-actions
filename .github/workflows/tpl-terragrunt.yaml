@@ -95,7 +95,7 @@ jobs:
       - name: Summarize terragrunt plan
         if: ${{ inputs.action == 'plan' }}
         id: plan_summarize
-        uses: proxmox-home-lab/.github/actions/tg-summarize@main
+        uses: proxmox-home-lab/.github/.github/actions/tg-summarize@main
         with:
           log_path: plan.log
 
@@ -139,7 +139,7 @@ jobs:
       - name: Summarize terragrunt apply
         if: ${{ inputs.action == 'apply' }}
         id: apply_summarize
-        uses: proxmox-home-lab/.github/actions/tg-summarize@main
+        uses: proxmox-home-lab/.github/.github/actions/tg-summarize@main
         with:
           log_path: apply.log
 
