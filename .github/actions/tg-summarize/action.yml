@@ -1,12 +1,10 @@
 name: "Terragrunt Plan/Apply Summarize"
-description: "Extract only STDOUT/WARN/ERROR terraform/tofu lines, strip ANSI, and emit a compact per-unit plan/apply summary (with optional details)."
+description: "Extract only STDOUT/WARN/ERROR terraform/tofu lines and emit summary."
 
 inputs:
   log_path:
-    description: "Path to terragrunt plan/apply log file captured with tee."
     required: true
   max_chars:
-    description: "Max characters allowed for the final summary output."
     required: false
     default: "60000"
 
@@ -17,131 +15,11 @@ outputs:
 runs:
   using: "composite"
   steps:
-    - name: Summarize
+    - name: Run summarize script
       id: export
       shell: bash
       run: |
         set -euo pipefail
-
-        python - <<'PY' >> "$GITHUB_OUTPUT"
-        import re
-        from pathlib import Path
-
-        log_path = Path("${{ inputs.log_path }}")
-        limit = int("${{ inputs.max_chars }}")
-
-        rx = re.compile(
-          r'^(?:\d{2}:\d{2}:\d{2}\.\d+\s+)?'
-          r'(STDOUT|WARN|ERROR)\s+\[(?P<unit>[^\]]+)\]\s+(?:terraform|tofu):\s?(?P<msg>.*)$'
-        )
-        ansi = re.compile(r'\x1b\[[0-9;]*m')
-
-        units = {}
-        for ln in log_path.read_text(errors="ignore").splitlines():
-          m = rx.match(ln)
-          if not m:
-            continue
-          unit = m.group("unit")
-          lvl = m.group(1)
-          msg = ansi.sub('', m.group("msg"))
-          units.setdefault(unit, []).append((lvl, msg))
-
-        plan_rx = re.compile(r'(Plan:\s+\d+\s+to add,\s+\d+\s+to change,\s+\d+\s+to destroy\.)')
-        apply_rx = re.compile(r'(Apply complete!\s+Resources:\s+\d+\s+added,\s+\d+\s+changed,\s+\d+\s+destroyed\.)')
-
-        def clip(s: str, n: int) -> str:
-          if not s:
-            return ""
-          if len(s) <= n:
-            return s
-          return s[: max(0, n - 13)] + "\n[TRUNCATED]\n"
-
-        def extract_plan_details(text: str, summary_line: str) -> str:
-          start_tf = text.find("Terraform will perform the following actions:")
-          start_tofu = text.find("OpenTofu will perform the following actions:")
-          start = start_tf if start_tf != -1 else start_tofu
-          end = text.find(summary_line)
-          if start != -1 and end != -1 and end > start:
-            return text[start:end].strip()
-          return ""
-
-        def extract_apply_details(text: str, summary_line: str) -> str:
-          start_tf = text.find("Terraform will perform the following actions:")
-          start_tofu = text.find("OpenTofu will perform the following actions:")
-          start = start_tf if start_tf != -1 else start_tofu
-          end = text.find(summary_line)
-          if start != -1 and end != -1 and end > start:
-            return text[start:end].strip()
-          return ""
-
-        def extract_warn_err(unit_entries) -> str:
-          we = [msg for lvl, msg in unit_entries if lvl in ("WARN", "ERROR") and msg.strip()]
-          return "\n".join(we).strip()
-
-        def summarize_unit(unit_entries):
-          text = "\n".join(msg for _, msg in unit_entries)
-          warn_err = extract_warn_err(unit_entries)
-
-          if "No changes. Your infrastructure matches the configuration." in text:
-            return ("✅", "No changes", "", warn_err)
-
-          m_plan = plan_rx.search(text)
-          if m_plan:
-            summary = m_plan.group(1)
-            details = extract_plan_details(text, summary)
-            return ("✏️", summary, details, warn_err)
-
-          m_apply = apply_rx.search(text)
-          if m_apply:
-            summary = m_apply.group(1)
-            details = extract_apply_details(text, summary)
-            return ("🚀", summary, details, warn_err)
-
-          if warn_err:
-            first = warn_err.splitlines()[0][:200]
-            return ("⚠️", first, "", warn_err)
-
-          return ("⚠️", "No summary found", "", "")
-
-        lines = ["## Terragrunt summary\n"]
-
-        if not units:
-          lines.append("> No STDOUT/WARN/ERROR terraform/tofu lines detected. Ensure the log contains lines like `15:45:34.412 STDOUT [unit] tofu: ...` or `STDOUT [unit] terraform: ...`.")
-        else:
-          for unit in sorted(units.keys()):
-            short = unit.split("/")[-1]
-            icon, summary, details, warn_err = summarize_unit(units[unit])
-
-            lines.append(f"- {icon} **{short}** — {summary}")
-
-            if warn_err:
-              lines.append("")
-              lines.append("  <details><summary>Warnings/Errors</summary>")
-              lines.append("")
-              lines.append("  ```text")
-              for ln in clip(warn_err, 2000).splitlines():
-                lines.append(f"  {ln}")
-              lines.append("  ```")
-              lines.append("")
-              lines.append("  </details>")
-
-            if details:
-              lines.append("")
-              lines.append("  <details><summary>Details</summary>")
-              lines.append("")
-              lines.append("  ```diff")
-              for ln in clip(details, 5000).splitlines():
-                lines.append(f"  {ln}")
-              lines.append("  ```")
-              lines.append("")
-              lines.append("  </details>")
-
-            lines.append("")
-
-        out = "\n".join(lines).rstrip() + "\n"
-        out = clip(out, limit)
-
-        print("summary<<EOF")
-        print(out)
-        print("EOF")
-        PY
+        python3 "${{ github.action_path }}/summarize.py" \
+          "${{ inputs.log_path }}" \
+          "${{ inputs.max_chars }}" >> "$GITHUB_OUTPUT"
