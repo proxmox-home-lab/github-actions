@@ -164,8 +164,19 @@ jobs:
             <!-- Terragrunt PR Comment -->
             ${{ steps.apply_summarize.outputs.summary }}
 
+      - name: Get PR base branch
+        if: ${{ inputs.action == 'apply' }}
+        id: pr_base
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pr="${{ github.event.pull_request.number || github.event.issue.number }}"
+          base_ref="$(gh pr view "$pr" --repo "${{ github.repository }}" --json baseRefName -q '.baseRefName')"
+          echo "base_ref=$base_ref" >> "$GITHUB_OUTPUT"
+          echo "Base branch is: $base_ref"
+
       - name: Merge PR
-        if: ${{ inputs.action == 'apply' && steps.terragrunt_apply.outcome == 'success' && github.ref != 'refs/heads/test' }}
+        if: ${{ inputs.action == 'apply' && steps.terragrunt_apply.outcome == 'success' && github.ref != steps.pr_base.outputs.base_ref }}
         uses: proxmox-home-lab/github-actions/.github/actions/merge-pr@main
         with:
           gh-token: ${{ steps.create_token.outputs.token }}
