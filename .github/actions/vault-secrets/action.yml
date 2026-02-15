@@ -30,6 +30,8 @@ runs:
 
     - name: Load secrets from Vault
       shell: bash
+      env:
+        VAULT_AGENT_HCL_FILE: ${{ inputs.vault_agent_hcl_file }}
       run: |
         set -euo pipefail
         source <(curl -s "$VAULT_HELPER_URL")
