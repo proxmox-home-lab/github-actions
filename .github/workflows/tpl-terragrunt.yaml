@@ -40,6 +40,12 @@ jobs:
             echo "Invalid action: ${{ inputs.action }}"
             exit 1
           fi
+      - name: Get secrets from vault
+        uses: proxmox-home-lab/github-actions/.github/actions/vault-secrets@main
+        with:
+          vault_version: ${{ env.VAULT_VERSION }}
+          vault_helper_version: ${{ env.VAULT_HELPER_VERSION }}
+
       - name: Create GitHub App token
         id: create_token
         uses: actions/create-github-app-token@v1
@@ -276,19 +282,11 @@ jobs:
           tg_version: ${{ env.TG_VERSION }}
           tofu_version: ${{ env.TOFU_VERSION }}
 
-      - name: Install Vault
-        uses: eLco/setup-vault@v1
+      - name: Get secrets from vault
+        uses: proxmox-home-lab/github-actions/.github/actions/vault-secrets@main
         with:
           vault_version: ${{ env.VAULT_VERSION }}
-
-      - name: Build VAULT HELPER URL
-        run: |
-          echo "VAULT_HELPER_URL=https://raw.githubusercontent.com/proxmox-home-lab/.github/${VAULT_HELPER_VERSION}/vault-helper.sh" >> "$GITHUB_ENV"
-
-      - name: Load secrets from Vault
-        run: |
-          source <(curl -s "$VAULT_HELPER_URL")
-          env
+          vault_helper_version: ${{ env.VAULT_HELPER_VERSION }}
 
       - uses: github/command@v2
         id: command
