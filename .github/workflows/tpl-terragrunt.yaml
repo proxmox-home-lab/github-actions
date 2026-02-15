@@ -81,6 +81,9 @@ jobs:
 
       - name: Get secrets from vault
         uses: proxmox-home-lab/github-actions/.github/actions/vault-secrets@main
+        with:
+          vault_version: ${{ env.VAULT_VERSION }}
+          vault_helper_version: ${{ env.VAULT_HELPER_VERSION }}
 
       - name: Detect terragrunt stacks from changed files
         id: detect_stacks
