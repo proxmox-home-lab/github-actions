@@ -12,11 +12,6 @@ concurrency:
   group: terragrunt-${{ github.repository }}-pr-${{ github.event.pull_request.number || github.event.issue.number }}
   cancel-in-progress: true
 
-permissions:
-  actions: read
-  contents: read
-  pull-requests: write
-
 env:
   TG_ALL: true
   TG_LOG_LEVEL: error
@@ -34,8 +29,10 @@ env:
   VAULT_SECRET_ID: ${{ secrets.VAULT_SECRET_ID }}
 
 jobs:
-  validate_input:
+  setup:
     runs-on: ubuntu-latest
+    outputs:
+      token: ${{ steps.create_token.outputs.token }}
     steps:
       - name: Validate action input
         run: |
@@ -43,10 +40,18 @@ jobs:
             echo "Invalid action: ${{ inputs.action }}"
             exit 1
           fi
+      - name: Create GitHub App token
+        id: create_token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ env.GITHUB_APP_ID }}
+          private-key: ${{ env.GITHUB_APP_PEM_FILE }}
+          owner: ${{ github.repository_owner }}
+          github-api-url: ${{ github.api_url }}
 
   plan:
     needs:
-      - validate_input
+      - setup
     if: ${{ inputs.action == 'plan' }}
     runs-on: ubuntu-latest
     outputs:
@@ -241,6 +246,7 @@ jobs:
       - name: PR Comment for Plan
         uses: peter-evans/create-or-update-comment@v4
         with:
+          token: ${{ needs.setup.outputs.token }}
           issue-number: ${{ github.event.pull_request.number }}
           body: |
             <!-- Terragrunt PR Comment -->
@@ -248,14 +254,14 @@ jobs:
 
   apply:
     needs:
-      - validate_input
+      - setup
     if: ${{ inputs.action == 'apply' && github.event.issue.pull_request }}
     runs-on: ubuntu-latest
     steps:
       - name: Resolve PR context
         id: pr_context
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ needs.setup.outputs.token }}
         run: |
           set -euo pipefail
           pr_number="${{ github.event.issue.number }}"
@@ -292,15 +298,6 @@ jobs:
           source <(curl -s "$VAULT_HELPER_URL")
           env
 
-      - name: Create GitHub App token
-        id: create_token
-        uses: actions/create-github-app-token@v1
-        with:
-          app-id: ${{ env.GITHUB_APP_ID }}
-          private-key: ${{ env.GITHUB_APP_PEM_FILE }}
-          owner: ${{ github.repository_owner }}
-          github-api-url: ${{ github.api_url }}
-
       - uses: github/command@v2
         id: command
         with:
@@ -308,13 +305,13 @@ jobs:
           reaction: rocket
           allowed_contexts: "pull_request"
           allowlist: "${{ github.repository_owner }}/apply-approvers"
-          allowlist_pat: ${{ steps.create_token.outputs.token }}
+          allowlist_pat: ${{ needs.setup.outputs.token }}
 
       - name: Resolve plan run and artifact
         if: ${{ steps.command.outputs.continue }}
         id: resolve_plan_artifact
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ needs.setup.outputs.token }}
         run: |
           set -euo pipefail
           pr_number="${{ steps.pr_context.outputs.pr_number }}"
@@ -352,7 +349,7 @@ jobs:
         with:
           name: ${{ steps.resolve_plan_artifact.outputs.artifact_name }}
           run-id: ${{ steps.resolve_plan_artifact.outputs.plan_run_id }}
-          github-token: ${{ github.token }}
+          github-token: ${{ needs.setup.outputs.token }}
           path: ${{ runner.temp }}/terragrunt-plan-artifact
 
       - name: Extract plan artifact
@@ -399,7 +396,7 @@ jobs:
           log_path: apply.log
           mode: apply
           run_outcome: ${{ steps.terragrunt_apply.outcome }}
-          github_token: ${{ github.token }}
+          github_token: ${{ needs.setup.outputs.token }}
           repo: ${{ github.repository }}
           run_id: ${{ github.run_id }}
           job_name: ${{ github.job }}
@@ -417,7 +414,7 @@ jobs:
         if: ${{ steps.terragrunt_apply.outcome == 'success' && steps.pr_context.outputs.head_ref != 'test' }}
         uses: proxmox-home-lab/github-actions/.github/actions/merge-pr@main
         with:
-          gh-token: ${{ steps.create_token.outputs.token }}
+          gh-token: ${{ needs.setup.outputs.token }}
           pr-number: ${{ steps.pr_context.outputs.pr_number }}
           merge-method: merge
           delete-branch: true

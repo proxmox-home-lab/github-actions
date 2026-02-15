@@ -7,6 +7,8 @@ Repository to store GitHub Actions &amp; workflows
 | Workflow                                | Description                                                                          |
 | --------------------------------------- | ------------------------------------------------------------------------------------ |
 | `.github/workflows/tpl-terragrunt.yaml` | Terragrunt workflow template for managing terragrunt deployments with GitHub Actions |
+| `.github/workflows/tpl-catalog-static-checks.yaml` | Static checks template for Terraform modules and Terragrunt units/stacks, including candidate version output |
+| `.github/workflows/tpl-catalog-tag-release.yaml` | Release tagging template that tags `main` commits as `vYYYY.MM.DD-revX` |
 
 ## Actions
 
