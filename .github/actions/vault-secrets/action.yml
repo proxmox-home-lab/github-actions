@@ -31,5 +31,6 @@ runs:
     - name: Load secrets from Vault
       shell: bash
       run: |
+        set -euo pipefail
         source <(curl -s "$VAULT_HELPER_URL")
         env
