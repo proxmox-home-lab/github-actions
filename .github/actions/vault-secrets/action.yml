@@ -10,10 +10,6 @@ inputs:
     description: "The version of Vault to install"
     required: true
     default: "v1.20.2"
-  vault_agent_hcl_file:
-    description: "Optional path to a Vault Agent HCL configuration file to use for authentication and secret retrieval"
-    required: true
-    default: vault-agent.hcl
 
 runs:
   using: "composite"
@@ -31,7 +27,10 @@ runs:
     - name: Load secrets from Vault
       shell: bash
       env:
-        VAULT_AGENT_HCL_FILE: ${{ inputs.vault_agent_hcl_file }}
+        VAULT_ADDR: ${{ env.VAULT_ADDR }}
+        VAULT_AGENT_CONFIG: ${{ env.VAULT_AGENT_CONFIG }}
+        VAULT_CLIENT_ID: ${{ env.VAULT_CLIENT_ID }}
+        VAULT_CLIENT_SECRET: ${{ env.VAULT_CLIENT_SECRET }}
       run: |
         set -euo pipefail
         source <(curl -s "$VAULT_HELPER_URL")
