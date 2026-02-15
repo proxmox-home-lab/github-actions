@@ -18,6 +18,7 @@ env:
   TG_NON_INTERACTIVE: true
   # TG_PARALLELISM: 1 // Check if it needed, sometimes with PostgreSQL Backend cause issues with concurrency
   TF_STRICT_MODE: true
+  TG_WORKING_DIR: ./iac
   TG_VERSION: v0.99.2
   TOFU_VERSION: v1.11.5
   VAULT_VERSION: v1.20.2
@@ -168,8 +169,7 @@ jobs:
           for stack_dir in "${target_stacks[@]}"; do
             echo "Validating stack: $stack_dir"
             (
-              cd "$stack_dir"
-              terragrunt stack run validate
+              terragrunt stack run --working-dir "$stack_dir" validate
             )
           done
 
@@ -186,7 +186,7 @@ jobs:
             echo "Planning stack: $stack_dir" | tee -a plan.log
             (
               cd "$stack_dir"
-              terragrunt stack run plan -out=tfplan.binary
+              terragrunt stack run --working-dir "$stack_dir" plan -out=tfplan.binary
             ) 2>&1 | tee -a plan.log
             cmd_exit="${PIPESTATUS[0]}"
             if [[ "$cmd_exit" -ne 0 ]]; then
@@ -370,7 +370,7 @@ jobs:
             echo "Applying stack: $stack_dir" | tee -a apply.log
             (
               cd "$stack_dir"
-              terragrunt stack run apply tfplan.binary
+              terragrunt stack run --working-dir "$stack_dir" apply tfplan.binary
             ) 2>&1 | tee -a apply.log
             cmd_exit="${PIPESTATUS[0]}"
             if [[ "$cmd_exit" -ne 0 ]]; then
