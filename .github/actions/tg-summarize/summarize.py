@@ -27,6 +27,9 @@ plan_rx = re.compile(r"(Plan:\s+\d+\s+to add,\s+\d+\s+to change,\s+\d+\s+to dest
 apply_rx = re.compile(
     r"(Apply complete!\s+Resources:\s+\d+\s+added,\s+\d+\s+changed,\s+\d+\s+destroyed\.)"
 )
+apply_counts_rx = re.compile(
+    r"Apply complete!\s+Resources:\s+(\d+)\s+added,\s+(\d+)\s+changed,\s+(\d+)\s+destroyed\."
+)
 
 NO_CHANGES_SENTENCE = "No changes. Your infrastructure matches the configuration."
 
@@ -91,6 +94,30 @@ def extract_status_lines(entries, max_lines=18) -> str:
 
 def overall_failed() -> bool:
     return run_outcome in ("failure", "cancelled")
+
+
+def parse_stack_info(unit: str):
+    norm = unit.strip().lstrip("./")
+    m = re.match(r"^(?P<stack>.+)/\.terragrunt-stack/(?P<unit>[^/]+)$", norm)
+    if m:
+        stack_path = m.group("stack")
+        unit_name = m.group("unit")
+    else:
+        stack_path = "(unknown)"
+        unit_name = norm.split("/")[-1]
+    stack_name = Path(stack_path).name if stack_path != "(unknown)" else "(unknown)"
+    return stack_name, stack_path, unit_name
+
+
+def has_effective_change(icon: str, summary: str) -> bool:
+    # Skip explicit no-op rows.
+    if icon == "⏭️":
+        return False
+    # In apply, hide successful 0/0/0 entries (no effective change).
+    m = apply_counts_rx.search(summary)
+    if m and all(int(v) == 0 for v in m.groups()):
+        return False
+    return True
 
 
 # -------------------------
@@ -214,31 +241,50 @@ if not units:
     lines.append("> No STDOUT/WARN/ERROR terraform/tofu lines detected.\n")
 
 else:
-    lines.append("| Unit | Result | Summary |")
-    lines.append("|---|---:|---|")
+    lines.append("| Stack | Stack Path | Unit | Result | Summary |")
+    lines.append("|---|---|---|---:|---|")
 
-    per_unit = {}
+    per_unit = []
 
     for unit in sorted(units.keys()):
-        short = unit.split("/")[-1]
         icon, summary, plan_block, status, warn_err = summarize_unit(units[unit])
-        per_unit[short] = (icon, summary, plan_block, status, warn_err)
-        lines.append(f"| `{short}` | {icon} | {summary} |")
+        stack_name, stack_path, short = parse_stack_info(unit)
+        if not has_effective_change(icon, summary):
+            continue
+        per_unit.append((stack_name, stack_path, short, icon, summary, plan_block, status, warn_err))
+
+    if not per_unit:
+        lines.append("> No stack/unit changes detected (all targets are no-op).\n")
+    else:
+        seen_stacks = set()
+        changed_stacks = []
+        for stack_name, stack_path, *_ in per_unit:
+            key = (stack_name, stack_path)
+            if key in seen_stacks:
+                continue
+            seen_stacks.add(key)
+            changed_stacks.append(key)
+
+        lines.append("**Changed Stacks:**")
+        for stack_name, stack_path in changed_stacks:
+            lines.append(f"- `{stack_name}` (`{stack_path}`)")
+        lines.append("")
+
+        for stack_name, stack_path, short, icon, summary, _, _, _ in per_unit:
+            lines.append(f"| `{stack_name}` | `{stack_path}` | `{short}` | {icon} | {summary} |")
 
     lines.append("")
 
     # DETAILS
-    for short, (icon, summary, plan_block, status, warn_err) in per_unit.items():
-
-        # ⏭️ SKIP units never show details
-        if icon == "⏭️":
-            continue
+    for stack_name, stack_path, short, icon, summary, plan_block, status, warn_err in per_unit:
 
         show_any = bool(status or warn_err or (mode == "plan" and plan_block))
         if not show_any:
             continue
 
-        lines.append(f"<details><summary><b>{icon} {short}</b></summary>\n")
+        lines.append(
+            f"<details><summary><b>{icon} {stack_name} ({stack_path}) / {short}</b></summary>\n"
+        )
 
         if mode == "plan":
             merged_parts = []

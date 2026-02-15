@@ -8,7 +8,12 @@ on:
         required: true
         type: string
 
+concurrency:
+  group: terragrunt-${{ github.repository }}-pr-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: true
+
 permissions:
+  actions: read
   contents: read
   pull-requests: write
 
@@ -39,15 +44,29 @@ jobs:
             exit 1
           fi
 
-  terragrunt:
+  plan:
     needs:
       - validate_input
+    if: ${{ inputs.action == 'plan' }}
     runs-on: ubuntu-latest
+    outputs:
+      pr_number: ${{ steps.pr_context.outputs.pr_number }}
+      head_sha: ${{ steps.pr_context.outputs.head_sha }}
+      artifact_name: ${{ steps.plan_artifact_meta.outputs.artifact_name }}
     steps:
+      - name: Resolve PR context
+        id: pr_context
+        run: |
+          set -euo pipefail
+          echo "pr_number=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
+          echo "head_sha=${{ github.event.pull_request.head.sha }}" >> "$GITHUB_OUTPUT"
+          echo "base_sha=${{ github.event.pull_request.base.sha }}" >> "$GITHUB_OUTPUT"
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.action == 'apply' && format('refs/pull/{0}/merge', github.event.issue.number) || github.ref }}
+          ref: ${{ steps.pr_context.outputs.head_sha }}
+          fetch-depth: 0
 
       - name: Install terragrunt
         uses: gruntwork-io/terragrunt-action@v3
@@ -68,34 +87,146 @@ jobs:
         run: |
           source <(curl -s "$VAULT_HELPER_URL")
           env
-      
-      - name: Run terragrunt validate
-        if: ${{ inputs.action == 'plan' }}
+
+      - name: Detect terragrunt stacks from changed files
+        id: detect_stacks
         run: |
-          terragrunt run validate
+          set -euo pipefail
+
+          base_sha="${{ steps.pr_context.outputs.base_sha }}"
+          head_sha="${{ steps.pr_context.outputs.head_sha }}"
+          tg_dir="${TG_WORKING_DIR#./}"
+
+          mapfile -t changed_files < <(git diff --name-only "$base_sha" "$head_sha" -- "$tg_dir")
+          mapfile -t all_stacks < <(find "$tg_dir" -type f -name "terragrunt.stack.hcl" -printf '%h\n' | sort -u)
+
+          if [[ ${#all_stacks[@]} -eq 0 ]]; then
+            echo "No terragrunt stacks found under $tg_dir"
+            exit 1
+          fi
+
+          if [[ ${#changed_files[@]} -eq 0 ]]; then
+            echo "No files changed under $tg_dir; using all stacks for safety."
+            printf '%s\n' "${all_stacks[@]}" > target_stacks.txt
+            echo "target_mode=all_stacks" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          declare -A stacks=()
+          global_change=false
+
+          for file in "${changed_files[@]}"; do
+            dir="$(dirname "$file")"
+            found_stack=""
+
+            while [[ "$dir" != "$tg_dir" && "$dir" != "." && "$dir" != "/" ]]; do
+              if [[ -f "$dir/terragrunt.stack.hcl" ]]; then
+                found_stack="$dir"
+                break
+              fi
+              dir="$(dirname "$dir")"
+            done
+
+            if [[ -n "$found_stack" ]]; then
+              stacks["$found_stack"]=1
+            else
+              # iac/common.hcl, iac/root.hcl, env files, etc. can impact all stacks.
+              global_change=true
+            fi
+          done
+
+          if [[ "$global_change" == "true" ]]; then
+            echo "Detected global IaC changes; running all stacks."
+            printf '%s\n' "${all_stacks[@]}" > target_stacks.txt
+            echo "target_mode=all_stacks" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ ${#stacks[@]} -eq 0 ]]; then
+            echo "No stack-specific changes detected; running all stacks for safety."
+            printf '%s\n' "${all_stacks[@]}" > target_stacks.txt
+            echo "target_mode=all_stacks" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          printf '%s\n' "${!stacks[@]}" | sort > target_stacks.txt
+
+          echo "target_mode=targeted" >> "$GITHUB_OUTPUT"
+          echo "Target stacks:"
+          cat target_stacks.txt
+
+      - name: Run terragrunt validate
+        run: |
+          set -euo pipefail
+
+          mapfile -t target_stacks < target_stacks.txt
+          for stack_dir in "${target_stacks[@]}"; do
+            echo "Validating stack: $stack_dir"
+            (
+              cd "$stack_dir"
+              terragrunt stack run validate
+            )
+          done
 
       - name: Run terragrunt plan
-        if: ${{ inputs.action == 'plan' }}
         id: terragrunt_plan
         run: |
-          terragrunt run plan 2>&1 | tee plan.log
+          set -euo pipefail
 
-      - name: Get step URL for terragrunt action
-        if: ${{ always() && (inputs.action == 'plan' || inputs.action == 'apply') }}
-        id: get_step_url
-        env:
-          GH_TOKEN: ${{ github.token }}
+          : > plan.log
+          exit_code=0
+          mapfile -t target_stacks < target_stacks.txt
+
+          for stack_dir in "${target_stacks[@]}"; do
+            echo "Planning stack: $stack_dir" | tee -a plan.log
+            (
+              cd "$stack_dir"
+              terragrunt stack run plan -out=tfplan.binary
+            ) 2>&1 | tee -a plan.log
+            cmd_exit="${PIPESTATUS[0]}"
+            if [[ "$cmd_exit" -ne 0 ]]; then
+              exit_code="$cmd_exit"
+            fi
+          done
+
+          exit "$exit_code"
+
+      - name: Build plan artifact metadata
+        if: ${{ success() }}
+        id: plan_artifact_meta
         run: |
-          if [[ "${{ inputs.action }}" == "plan" ]]; then
-            step_name="Run terragrunt plan"
-          else
-            step_name="Run terragrunt apply"
-          fi
-          step_url=$(gh run --repo ${{ github.repository }} view ${{ github.run_id }} --json jobs --jq '.jobs[] | select(.name | contains("${{ github.job }}")) | .url, (.steps[] | select(.name == "'"$step_name"'") | "#step:\(.number):1")' | tr -d "\n")
-          echo "step_url=${step_url}" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          artifact_name="terragrunt-plan-pr${{ steps.pr_context.outputs.pr_number }}-sha${{ steps.pr_context.outputs.head_sha }}"
+          echo "artifact_name=$artifact_name" >> "$GITHUB_OUTPUT"
+
+      - name: Pack terragrunt plan files
+        if: ${{ success() }}
+        run: |
+          set -euo pipefail
+          cd "${TG_WORKING_DIR}"
+          find . -type f -name 'tfplan.binary' -print0 | tar --null --files-from=- -czf "$RUNNER_TEMP/terragrunt-plan-files.tgz"
+
+      - name: Prepare target metadata
+        if: ${{ success() }}
+        run: |
+          set -euo pipefail
+          echo "${{ steps.detect_stacks.outputs.target_mode }}" > "$RUNNER_TEMP/target_mode.txt"
+          cp target_stacks.txt "$RUNNER_TEMP/target_stacks.txt"
+
+      - name: Upload terragrunt plan artifact
+        if: ${{ success() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.plan_artifact_meta.outputs.artifact_name }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            ${{ runner.temp }}/terragrunt-plan-files.tgz
+            ${{ runner.temp }}/target_mode.txt
+            ${{ runner.temp }}/target_stacks.txt
+            plan.log
 
       - name: Summarize terragrunt plan
-        if: ${{ inputs.action == 'plan' }}
         id: plan_summarize
         uses: proxmox-home-lab/github-actions/.github/actions/tg-summarize@main
         with:
@@ -108,7 +239,6 @@ jobs:
           job_name: ${{ github.job }}
 
       - name: PR Comment for Plan
-        if: ${{ inputs.action == 'plan' }}
         uses: peter-evans/create-or-update-comment@v4
         with:
           issue-number: ${{ github.event.pull_request.number }}
@@ -116,8 +246,53 @@ jobs:
             <!-- Terragrunt PR Comment -->
             ${{ steps.plan_summarize.outputs.summary }}
 
+  apply:
+    needs:
+      - validate_input
+    if: ${{ inputs.action == 'apply' && github.event.issue.pull_request }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve PR context
+        id: pr_context
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          pr_number="${{ github.event.issue.number }}"
+          pr_json="$(gh pr view "$pr_number" --repo "${{ github.repository }}" --json headRefName,headRefOid)"
+          head_ref="$(jq -r '.headRefName' <<<"$pr_json")"
+          head_sha="$(jq -r '.headRefOid' <<<"$pr_json")"
+
+          echo "pr_number=$pr_number" >> "$GITHUB_OUTPUT"
+          echo "head_ref=$head_ref" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr_context.outputs.head_sha }}
+
+      - name: Install terragrunt
+        uses: gruntwork-io/terragrunt-action@v3
+        with:
+          tg_version: ${{ env.TG_VERSION }}
+          tofu_version: ${{ env.TOFU_VERSION }}
+
+      - name: Install Vault
+        uses: eLco/setup-vault@v1
+        with:
+          vault_version: ${{ env.VAULT_VERSION }}
+
+      - name: Build VAULT HELPER URL
+        run: |
+          echo "VAULT_HELPER_URL=https://raw.githubusercontent.com/proxmox-home-lab/.github/${VAULT_HELPER_VERSION}/vault-helper.sh" >> "$GITHUB_ENV"
+
+      - name: Load secrets from Vault
+        run: |
+          source <(curl -s "$VAULT_HELPER_URL")
+          env
+
       - name: Create GitHub App token
-        if: ${{ inputs.action == 'apply' }}
         id: create_token
         uses: actions/create-github-app-token@v1
         with:
@@ -127,7 +302,6 @@ jobs:
           github-api-url: ${{ github.api_url }}
 
       - uses: github/command@v2
-        if: ${{ inputs.action == 'apply' }}
         id: command
         with:
           command: .apply
@@ -136,14 +310,89 @@ jobs:
           allowlist: "${{ github.repository_owner }}/apply-approvers"
           allowlist_pat: ${{ steps.create_token.outputs.token }}
 
+      - name: Resolve plan run and artifact
+        if: ${{ steps.command.outputs.continue }}
+        id: resolve_plan_artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          pr_number="${{ steps.pr_context.outputs.pr_number }}"
+          head_sha="${{ steps.pr_context.outputs.head_sha }}"
+          workflow_id="$(
+            gh api \
+              "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+              --jq '.workflow_id'
+          )"
+          plan_run_id="$(
+            gh api \
+              "repos/${{ github.repository }}/actions/workflows/${workflow_id}/runs?event=pull_request&status=completed&per_page=100" \
+              --jq '.workflow_runs
+                | map(select(.conclusion == "success"))
+                | map(select(any(.pull_requests[]?; .number == '"$pr_number"')))
+                | map(select(.head_sha == "'"$head_sha"'"))
+                | sort_by(.created_at)
+                | reverse
+                | .[0].id'
+          )"
+
+          if [[ -z "$plan_run_id" || "$plan_run_id" == "null" ]]; then
+            echo "No successful plan run found for PR #$pr_number and head SHA $head_sha"
+            exit 1
+          fi
+
+          artifact_name="terragrunt-plan-pr${pr_number}-sha${head_sha}"
+
+          echo "plan_run_id=$plan_run_id" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=$artifact_name" >> "$GITHUB_OUTPUT"
+
+      - name: Download plan artifact
+        if: ${{ steps.command.outputs.continue }}
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.resolve_plan_artifact.outputs.artifact_name }}
+          run-id: ${{ steps.resolve_plan_artifact.outputs.plan_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/terragrunt-plan-artifact
+
+      - name: Extract plan artifact
+        if: ${{ steps.command.outputs.continue }}
+        run: |
+          set -euo pipefail
+          tar -xzf "$RUNNER_TEMP/terragrunt-plan-artifact/terragrunt-plan-files.tgz" -C "${TG_WORKING_DIR}"
+
       - name: Run terragrunt apply
-        if: ${{ (inputs.action == 'apply' && steps.command.outputs.continue) }}
+        if: ${{ steps.command.outputs.continue }}
         id: terragrunt_apply
         run: |
-          terragrunt run apply 2>&1 | tee apply.log
+          set -euo pipefail
+
+          target_mode="$(cat "$RUNNER_TEMP/terragrunt-plan-artifact/target_mode.txt")"
+          if [[ "$target_mode" != "targeted" && "$target_mode" != "all_stacks" ]]; then
+            echo "Invalid target_mode: $target_mode"
+            exit 1
+          fi
+
+          : > apply.log
+          exit_code=0
+          mapfile -t target_stacks < "$RUNNER_TEMP/terragrunt-plan-artifact/target_stacks.txt"
+
+          for stack_dir in "${target_stacks[@]}"; do
+            echo "Applying stack: $stack_dir" | tee -a apply.log
+            (
+              cd "$stack_dir"
+              terragrunt stack run apply tfplan.binary
+            ) 2>&1 | tee -a apply.log
+            cmd_exit="${PIPESTATUS[0]}"
+            if [[ "$cmd_exit" -ne 0 ]]; then
+              exit_code="$cmd_exit"
+            fi
+          done
+
+          exit "$exit_code"
 
       - name: Summarize terragrunt apply
-        if: ${{ inputs.action == 'apply' }}
+        if: ${{ always() && steps.command.outputs.continue }}
         id: apply_summarize
         uses: proxmox-home-lab/github-actions/.github/actions/tg-summarize@main
         with:
@@ -156,32 +405,20 @@ jobs:
           job_name: ${{ github.job }}
 
       - name: PR Comment for Apply
-        if: ${{ inputs.action == 'apply' && always() }}
+        if: ${{ always() && steps.command.outputs.continue }}
         uses: peter-evans/create-or-update-comment@v4
         with:
-          issue-number: ${{ github.event.pull_request.number || github.event.issue.number }}
+          issue-number: ${{ steps.pr_context.outputs.pr_number }}
           body: |
             <!-- Terragrunt PR Comment -->
             ${{ steps.apply_summarize.outputs.summary }}
 
-      - name: Get PR source branch
-        if: ${{ inputs.action == 'apply' }}
-        id: pr_head
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          pr="${{ github.event.pull_request.number || github.event.issue.number }}"
-          head_ref="$(gh pr view "$pr" --repo "${{ github.repository }}" --json headRefName -q '.headRefName')"
-          echo "head_ref=$head_ref" >> "$GITHUB_OUTPUT"
-          echo "Source branch is: $head_ref"
-
       - name: Merge PR
-        if: ${{ inputs.action == 'apply' && steps.terragrunt_apply.outcome == 'success' && steps.pr_head.outputs.head_ref != 'test' }}
+        if: ${{ steps.terragrunt_apply.outcome == 'success' && steps.pr_context.outputs.head_ref != 'test' }}
         uses: proxmox-home-lab/github-actions/.github/actions/merge-pr@main
         with:
           gh-token: ${{ steps.create_token.outputs.token }}
-          pr-number: ${{ github.event.pull_request.number || github.event.issue.number }}
+          pr-number: ${{ steps.pr_context.outputs.pr_number }}
           merge-method: merge
           delete-branch: true
           commit-message: "[AUTO] ${{ github.event.issue.title }}"
