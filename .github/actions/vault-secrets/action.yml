@@ -1,18 +1,28 @@
 name: "Vault Secrets"
 description: "Action to load secrets from Vault and set them as environment variables for subsequent steps."
 
+inputs:
+  vault_helper_version:
+    description: "The version of the vault-helper script to use"
+    required: true
+    default: "main"
+  vault_version:
+    description: "The version of Vault to install"
+    required: true
+    default: "v1.20.2"
+
 runs:
   using: "composite"
   steps:
     - name: Install Vault
       uses: eLco/setup-vault@v1
       with:
-        vault_version: ${{ env.VAULT_VERSION }}
+        vault_version: ${{ inputs.vault_version }}
 
     - name: Build VAULT HELPER URL
       shell: bash
       run: |
-        echo "VAULT_HELPER_URL=https://raw.githubusercontent.com/proxmox-home-lab/.github/${VAULT_HELPER_VERSION}/vault-helper.sh" >> "$GITHUB_ENV"
+        echo "VAULT_HELPER_URL=https://raw.githubusercontent.com/proxmox-home-lab/.github/${{ inputs.vault_helper_version }}/vault-helper.sh" >> "$GITHUB_ENV"
 
     - name: Load secrets from Vault
       shell: bash
