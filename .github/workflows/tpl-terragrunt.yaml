@@ -346,6 +346,8 @@ jobs:
 
       - name: Run terragrunt apply
         id: terragrunt_apply
+        env:
+          TG_NON_INTERACTIVE: "false"
         run: |
           set -euo pipefail
 
