@@ -185,7 +185,6 @@ jobs:
           for stack_dir in "${target_stacks[@]}"; do
             echo "Planning stack: $stack_dir" | tee -a plan.log
             (
-              cd "$stack_dir"
               terragrunt stack run --working-dir "$stack_dir" -- plan -out=tfplan.binary
             ) 2>&1 | tee -a plan.log
             cmd_exit="${PIPESTATUS[0]}"
@@ -353,7 +352,6 @@ jobs:
           for stack_dir in "${target_stacks[@]}"; do
             echo "Planning stack: $stack_dir" | tee -a plan.log
             (
-              cd "$stack_dir"
               terragrunt stack run --working-dir "$stack_dir" -- plan -out=tfplan.binary
             ) 2>&1 | tee -a plan.log
             cmd_exit="${PIPESTATUS[0]}"
@@ -466,7 +464,6 @@ jobs:
           for stack_dir in "${target_stacks[@]}"; do
             echo "Applying stack: $stack_dir" | tee -a apply.log
             (
-              cd "$stack_dir"
               terragrunt stack run --working-dir "$stack_dir" -- apply tfplan.binary
             ) 2>&1 | tee -a apply.log
             cmd_exit="${PIPESTATUS[0]}"
