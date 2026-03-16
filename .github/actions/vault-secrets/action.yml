@@ -30,7 +30,7 @@ runs:
         VAULT_ADDR: ${{ env.VAULT_ADDR }}
         VAULT_AGENT_CONFIG: ${{ env.VAULT_AGENT_CONFIG }}
         VAULT_CLIENT_ID: ${{ env.VAULT_CLIENT_ID }}
-        VAULT_CLIENT_SECRET: ${{ env.VAULT_CLIENT_SECRET }}
+        VAULT_SECRET_ID: ${{ env.VAULT_SECRET_ID }}
       run: |
         set -euo pipefail
         source <(curl -s "$VAULT_HELPER_URL")
