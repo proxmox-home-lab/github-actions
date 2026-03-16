@@ -47,7 +47,7 @@ jobs:
     outputs:
       pr_number: ${{ steps.pr_context.outputs.pr_number }}
       head_sha: ${{ steps.pr_context.outputs.head_sha }}
-      artifact_name: ${{ steps.plan_artifact_meta.outputs.artifact_name }}
+      artifact_name: ${{ steps.pack.outputs.artifact_name }}
     steps:
       - name: Resolve PR context
         id: pr_context
@@ -176,40 +176,30 @@ jobs:
 
           exit "$exit_code"
 
-      - name: Build plan artifact metadata
+      - name: Stage plan artifact files
         if: ${{ success() }}
-        id: plan_artifact_meta
+        id: pack
         run: |
           set -euo pipefail
           artifact_name="terragrunt-plan-pr${{ steps.pr_context.outputs.pr_number }}-sha${{ steps.pr_context.outputs.head_sha }}"
-          echo "artifact_name=$artifact_name" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=${artifact_name}" >> "$GITHUB_OUTPUT"
 
-      - name: Pack terragrunt plan files
-        if: ${{ success() }}
-        run: |
-          set -euo pipefail
+          mkdir -p plan-artifact
           cd "${TG_WORKING_DIR}"
-          find . -type f -name 'tfplan.binary' -print0 | tar --null --files-from=- -czf "$RUNNER_TEMP/terragrunt-plan-files.tgz"
-
-      - name: Prepare target metadata
-        if: ${{ success() }}
-        run: |
-          set -euo pipefail
-          echo "${{ steps.detect_stacks.outputs.target_mode }}" > "$RUNNER_TEMP/target_mode.txt"
-          cp target_stacks.txt "$RUNNER_TEMP/target_stacks.txt"
+          find . -type f -name 'tfplan.binary' -print0 | tar --null --files-from=- -czf "$OLDPWD/plan-artifact/terragrunt-plan-files.tgz"
+          cd "$OLDPWD"
+          echo "${{ steps.detect_stacks.outputs.target_mode }}" > plan-artifact/target_mode.txt
+          cp target_stacks.txt plan-artifact/target_stacks.txt
+          cp plan.log plan-artifact/plan.log
 
       - name: Upload terragrunt plan artifact
         if: ${{ success() }}
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.plan_artifact_meta.outputs.artifact_name }}
+          name: ${{ steps.pack.outputs.artifact_name }}
           if-no-files-found: error
           retention-days: 14
-          path: |
-            ${{ runner.temp }}/terragrunt-plan-files.tgz
-            ${{ runner.temp }}/target_mode.txt
-            ${{ runner.temp }}/target_stacks.txt
-            plan.log
+          path: plan-artifact/
 
       - name: Summarize terragrunt plan
         id: plan_summarize
@@ -231,6 +221,7 @@ jobs:
           issue-number: ${{ github.event.pull_request.number }}
           comment-author: github-actions[bot]
           body-includes: "<!-- Terragrunt PR Comment -->"
+          direction: last
 
       - name: PR Comment for Plan
         uses: peter-evans/create-or-update-comment@v4
@@ -243,172 +234,86 @@ jobs:
             <!-- Terragrunt PR Comment -->
             ${{ steps.plan_summarize.outputs.summary }}
 
-  plan-for-apply:
-    # Runs on push to main: generates a fresh plan from the merged state,
-    # uploads it as an artifact for the apply job.
+  # Runs BEFORE the environment gate so the reviewer can see the plan
+  # in the Actions UI before approving the apply job.
+  # Downloads the exact artifact produced during the PR plan — no re-planning.
+  show-plan:
     needs:
       - setup
     if: ${{ inputs.action == 'apply' }}
     runs-on: ubuntu-latest
     outputs:
-      artifact_name: ${{ steps.plan_artifact_meta.outputs.artifact_name }}
+      artifact_name: ${{ steps.find_artifact.outputs.artifact_name }}
+      plan_run_id: ${{ steps.find_artifact.outputs.plan_run_id }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Install terragrunt
-        uses: gruntwork-io/terragrunt-action@v3
-        with:
-          tg_version: ${{ env.TG_VERSION }}
-          tofu_version: ${{ env.TOFU_VERSION }}
-
-      - name: Get secrets from vault
-        uses: proxmox-home-lab/github-actions/.github/actions/vault-secrets@main
-        with:
-          vault_version: ${{ env.VAULT_VERSION }}
-          vault_helper_version: ${{ env.VAULT_HELPER_VERSION }}
-
-      - name: Detect terragrunt stacks from changed files
-        id: detect_stacks
+      - name: Find PR plan artifact
+        id: find_artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
-          tg_dir="${TG_WORKING_DIR#./}"
-          base_sha="${{ github.event.before }}"
-          head_sha="${{ github.sha }}"
+          pr_number=$(gh api "/repos/${{ github.repository }}/commits/${{ github.sha }}/pulls" \
+            --jq '.[0].number // empty')
 
-          mapfile -t changed_files < <(git diff --name-only "$base_sha" "$head_sha" -- "$tg_dir" 2>/dev/null || true)
-          mapfile -t all_stacks < <(find "$tg_dir" -type f -name "terragrunt.stack.hcl" -printf '%h\n' | sort -u)
-
-          if [[ ${#all_stacks[@]} -eq 0 ]]; then
-            echo "No terragrunt stacks found under $tg_dir"
+          if [[ -z "$pr_number" ]]; then
+            echo "::error::Could not determine PR number for commit ${{ github.sha }}"
             exit 1
           fi
 
-          if [[ ${#changed_files[@]} -eq 0 ]]; then
-            echo "No files changed; using all stacks for safety."
-            printf '%s\n' "${all_stacks[@]}" > target_stacks.txt
-            echo "target_mode=all_stacks" >> "$GITHUB_OUTPUT"
-            exit 0
+          pr_head_sha=$(gh api "/repos/${{ github.repository }}/pulls/${pr_number}" \
+            --jq '.head.sha')
+
+          artifact_name="terragrunt-plan-pr${pr_number}-sha${pr_head_sha}"
+
+          plan_run_id=$(gh run list \
+            --repo "${{ github.repository }}" \
+            --event pull_request \
+            --json databaseId,headSha,conclusion \
+            --jq ".[] | select(.headSha == \"${pr_head_sha}\" and .conclusion == \"success\") | .databaseId" \
+            | head -1)
+
+          if [[ -z "$plan_run_id" ]]; then
+            echo "::error::No successful plan run found for PR ${pr_number} (head SHA: ${pr_head_sha})"
+            exit 1
           fi
 
-          declare -A stacks=()
-          global_change=false
+          echo "artifact_name=${artifact_name}" >> "$GITHUB_OUTPUT"
+          echo "plan_run_id=${plan_run_id}" >> "$GITHUB_OUTPUT"
+          echo "Resolved: PR #${pr_number}, head SHA ${pr_head_sha}, plan run ${plan_run_id}"
 
-          for file in "${changed_files[@]}"; do
-            dir="$(dirname "$file")"
-            found_stack=""
-            while [[ "$dir" != "$tg_dir" && "$dir" != "." && "$dir" != "/" ]]; do
-              if [[ -f "$dir/terragrunt.stack.hcl" ]]; then
-                found_stack="$dir"
-                break
-              fi
-              dir="$(dirname "$dir")"
-            done
-            if [[ -n "$found_stack" ]]; then
-              stacks["$found_stack"]=1
-            else
-              global_change=true
-            fi
-          done
-
-          if [[ "$global_change" == "true" ]]; then
-            echo "Detected global IaC changes; running all stacks."
-            printf '%s\n' "${all_stacks[@]}" > target_stacks.txt
-            echo "target_mode=all_stacks" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          if [[ ${#stacks[@]} -eq 0 ]]; then
-            printf '%s\n' "${all_stacks[@]}" > target_stacks.txt
-            echo "target_mode=all_stacks" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          printf '%s\n' "${!stacks[@]}" | sort > target_stacks.txt
-          echo "target_mode=targeted" >> "$GITHUB_OUTPUT"
-          echo "Target stacks:"
-          cat target_stacks.txt
-
-      - name: Run terragrunt plan
-        id: terragrunt_plan
-        run: |
-          set -euo pipefail
-
-          : > plan.log
-          exit_code=0
-          mapfile -t target_stacks < target_stacks.txt
-
-          for stack_dir in "${target_stacks[@]}"; do
-            echo "Planning stack: $stack_dir" | tee -a plan.log
-            (
-              terragrunt stack run --working-dir "$stack_dir" -- plan -out=tfplan.binary
-            ) 2>&1 | tee -a plan.log
-            cmd_exit="${PIPESTATUS[0]}"
-            if [[ "$cmd_exit" -ne 0 ]]; then
-              exit_code="$cmd_exit"
-            fi
-          done
-
-          exit "$exit_code"
-
-      - name: Build plan artifact metadata
-        if: ${{ success() }}
-        id: plan_artifact_meta
-        run: |
-          set -euo pipefail
-          artifact_name="terragrunt-apply-plan-sha${{ github.sha }}"
-          echo "artifact_name=$artifact_name" >> "$GITHUB_OUTPUT"
-
-      - name: Pack terragrunt plan files
-        if: ${{ success() }}
-        run: |
-          set -euo pipefail
-          cd "${TG_WORKING_DIR}"
-          find . -type f -name 'tfplan.binary' -print0 | tar --null --files-from=- -czf "$RUNNER_TEMP/terragrunt-plan-files.tgz"
-
-      - name: Prepare target metadata
-        if: ${{ success() }}
-        run: |
-          set -euo pipefail
-          echo "${{ steps.detect_stacks.outputs.target_mode }}" > "$RUNNER_TEMP/target_mode.txt"
-          cp target_stacks.txt "$RUNNER_TEMP/target_stacks.txt"
-
-      - name: Upload plan artifact for apply
-        if: ${{ success() }}
-        uses: actions/upload-artifact@v4
+      - name: Download plan artifact
+        uses: actions/download-artifact@v4
         with:
-          name: ${{ steps.plan_artifact_meta.outputs.artifact_name }}
-          if-no-files-found: error
-          retention-days: 1
-          path: |
-            ${{ runner.temp }}/terragrunt-plan-files.tgz
-            ${{ runner.temp }}/target_mode.txt
-            ${{ runner.temp }}/target_stacks.txt
-            plan.log
+          name: ${{ steps.find_artifact.outputs.artifact_name }}
+          run-id: ${{ steps.find_artifact.outputs.plan_run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/terragrunt-plan-artifact
 
-      - name: Write plan summary
-        if: ${{ always() }}
+      - name: Write plan summary for reviewer
+        id: plan_summarize
         uses: proxmox-home-lab/github-actions/.github/actions/tg-summarize@main
         with:
-          log_path: plan.log
+          log_path: ${{ runner.temp }}/terragrunt-plan-artifact/plan.log
           mode: plan
-          run_outcome: ${{ steps.terragrunt_plan.outcome }}
+          run_outcome: success
           github_token: ${{ github.token }}
           repo: ${{ github.repository }}
-          run_id: ${{ github.run_id }}
-          job_name: ${{ github.job }}
+          run_id: ${{ steps.find_artifact.outputs.plan_run_id }}
+          job_name: plan
+
+      - name: Write to Job Summary
+        run: |
+          echo "${{ steps.plan_summarize.outputs.summary }}" >> "$GITHUB_STEP_SUMMARY"
 
   apply:
     needs:
       - setup
-      - plan-for-apply
+      - show-plan
     if: ${{ inputs.action == 'apply' }}
     runs-on: ubuntu-latest
     # GitHub Environment gate: pauses here and notifies iac-approvers.
-    # Reviewer sees the plan summary in the plan-for-apply job output before approving.
+    # Reviewer sees the plan summary in the show-plan job output before approving.
     environment: production
     steps:
       - name: Checkout repository
@@ -429,11 +334,12 @@ jobs:
       - name: Download plan artifact
         uses: actions/download-artifact@v4
         with:
-          name: ${{ needs.plan-for-apply.outputs.artifact_name }}
+          name: ${{ needs.show-plan.outputs.artifact_name }}
+          run-id: ${{ needs.show-plan.outputs.plan_run_id }}
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/terragrunt-plan-artifact
 
-      - name: Extract plan artifact
+      - name: Extract plan files
         run: |
           set -euo pipefail
           tar -xzf "$RUNNER_TEMP/terragrunt-plan-artifact/terragrunt-plan-files.tgz" -C "${TG_WORKING_DIR}"
@@ -478,3 +384,8 @@ jobs:
           repo: ${{ github.repository }}
           run_id: ${{ github.run_id }}
           job_name: ${{ github.job }}
+
+      - name: Write apply summary
+        if: ${{ always() }}
+        run: |
+          echo "${{ steps.apply_summarize.outputs.summary }}" >> "$GITHUB_STEP_SUMMARY"
