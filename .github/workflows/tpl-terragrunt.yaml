@@ -312,9 +312,9 @@ jobs:
       - show-plan
     if: ${{ inputs.action == 'apply' }}
     runs-on: ubuntu-latest
-    # GitHub Environment gate: pauses here and notifies iac-approvers.
-    # Reviewer sees the plan summary in the show-plan job output before approving.
-    environment: production
+    # No environment gate here: approval happens via CODEOWNERS review on the PR
+    # before merge. The branch ruleset enforces require_code_owner_review = true,
+    # so the merge itself is the gated approval.
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
