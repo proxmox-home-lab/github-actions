@@ -234,19 +234,31 @@ jobs:
             <!-- Terragrunt PR Comment -->
             ${{ steps.plan_summarize.outputs.summary }}
 
-  # Runs BEFORE the environment gate so the reviewer can see the plan
-  # in the Actions UI before approving the apply job.
-  # Downloads the exact artifact produced during the PR plan — no re-planning.
-  show-plan:
+  apply:
     needs:
       - setup
     if: ${{ inputs.action == 'apply' }}
     runs-on: ubuntu-latest
-    outputs:
-      artifact_name: ${{ steps.find_artifact.outputs.artifact_name }}
-      plan_run_id: ${{ steps.find_artifact.outputs.plan_run_id }}
+    # No environment gate here: approval happens via CODEOWNERS review on the PR
+    # before merge. The branch ruleset enforces require_code_owner_review = true,
+    # so the merge itself is the gated approval.
     steps:
-      - name: Find PR plan artifact
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install terragrunt
+        uses: gruntwork-io/terragrunt-action@v3
+        with:
+          tg_version: ${{ env.TG_VERSION }}
+          tofu_version: ${{ env.TOFU_VERSION }}
+
+      - name: Get secrets from vault
+        uses: proxmox-home-lab/github-actions/.github/actions/vault-secrets@main
+        with:
+          vault_version: ${{ env.VAULT_VERSION }}
+          vault_helper_version: ${{ env.VAULT_HELPER_VERSION }}
+
+      - name: Find and download plan artifact
         id: find_artifact
         env:
           GH_TOKEN: ${{ github.token }}
@@ -287,55 +299,6 @@ jobs:
         with:
           name: ${{ steps.find_artifact.outputs.artifact_name }}
           run-id: ${{ steps.find_artifact.outputs.plan_run_id }}
-          github-token: ${{ github.token }}
-          path: ${{ runner.temp }}/terragrunt-plan-artifact
-
-      - name: Write plan summary for reviewer
-        id: plan_summarize
-        uses: proxmox-home-lab/github-actions/.github/actions/tg-summarize@main
-        with:
-          log_path: ${{ runner.temp }}/terragrunt-plan-artifact/plan.log
-          mode: plan
-          run_outcome: success
-          github_token: ${{ github.token }}
-          repo: ${{ github.repository }}
-          run_id: ${{ steps.find_artifact.outputs.plan_run_id }}
-          job_name: plan
-
-      - name: Write to Job Summary
-        run: |
-          echo "${{ steps.plan_summarize.outputs.summary }}" >> "$GITHUB_STEP_SUMMARY"
-
-  apply:
-    needs:
-      - setup
-      - show-plan
-    if: ${{ inputs.action == 'apply' }}
-    runs-on: ubuntu-latest
-    # No environment gate here: approval happens via CODEOWNERS review on the PR
-    # before merge. The branch ruleset enforces require_code_owner_review = true,
-    # so the merge itself is the gated approval.
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install terragrunt
-        uses: gruntwork-io/terragrunt-action@v3
-        with:
-          tg_version: ${{ env.TG_VERSION }}
-          tofu_version: ${{ env.TOFU_VERSION }}
-
-      - name: Get secrets from vault
-        uses: proxmox-home-lab/github-actions/.github/actions/vault-secrets@main
-        with:
-          vault_version: ${{ env.VAULT_VERSION }}
-          vault_helper_version: ${{ env.VAULT_HELPER_VERSION }}
-
-      - name: Download plan artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ needs.show-plan.outputs.artifact_name }}
-          run-id: ${{ needs.show-plan.outputs.plan_run_id }}
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/terragrunt-plan-artifact
 
