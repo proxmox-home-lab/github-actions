@@ -25,7 +25,7 @@ rx = re.compile(
     r"(STDOUT|WARN|ERROR)\s+\[(?P<unit>[^\]]+)\]\s+(?:terraform|tofu):\s?(?P<msg>.*)$"
 )
 
-plan_rx = re.compile(r"(Plan:\s+\d+\s+to add,\s+\d+\s+to change,\s+\d+\s+to destroy\.)")
+plan_rx = re.compile(r"(Plan:(?:\s+\d+\s+to import,)?\s+\d+\s+to add,\s+\d+\s+to change,\s+\d+\s+to destroy\.)")
 apply_rx = re.compile(
     r"(Apply complete!\s+Resources:\s+\d+\s+added,\s+\d+\s+changed,\s+\d+\s+destroyed\.)"
 )
