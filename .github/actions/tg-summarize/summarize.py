@@ -248,9 +248,6 @@ if not units:
     lines.append("> No STDOUT/WARN/ERROR terraform/tofu lines detected.\n")
 
 else:
-    lines.append("| Stack | Stack Path | Unit | Result | Summary |")
-    lines.append("|---|---|---|---:|---|")
-
     per_unit = []
 
     for unit in sorted(units.keys()):
@@ -267,16 +264,17 @@ else:
         changed_stacks = []
         for stack_name, stack_path, *_ in per_unit:
             key = (stack_name, stack_path)
-            if key in seen_stacks:
-                continue
-            seen_stacks.add(key)
-            changed_stacks.append(key)
+            if key not in seen_stacks:
+                seen_stacks.add(key)
+                changed_stacks.append(key)
 
         lines.append("**Changed Stacks:**")
         for stack_name, stack_path in changed_stacks:
             lines.append(f"- `{stack_name}` (`{stack_path}`)")
         lines.append("")
 
+        lines.append("| Stack | Stack Path | Unit | Result | Summary |")
+        lines.append("|---|---|---|---:|---|")
         for stack_name, stack_path, short, icon, summary, _, _, _ in per_unit:
             lines.append(f"| `{stack_name}` | `{stack_path}` | `{short}` | {icon} | {summary} |")
 
