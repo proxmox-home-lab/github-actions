@@ -31,8 +31,6 @@ env:
 jobs:
   setup:
     runs-on: ubuntu-latest
-    outputs:
-      token: ${{ steps.create_token.outputs.token }}
     steps:
       - name: Validate action input
         run: |
@@ -40,23 +38,6 @@ jobs:
             echo "Invalid action: ${{ inputs.action }}"
             exit 1
           fi
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Get secrets from vault
-        uses: proxmox-home-lab/github-actions/.github/actions/vault-secrets@main
-        with:
-          vault_version: ${{ env.VAULT_VERSION }}
-          vault_helper_version: ${{ env.VAULT_HELPER_VERSION }}
-
-      - name: Create GitHub App token
-        id: create_token
-        uses: actions/create-github-app-token@v1
-        with:
-          app-id: ${{ env.GITHUB_APP_ID }}
-          private-key: ${{ env.GITHUB_APP_PEM_FILE }}
-          owner: ${{ github.repository_owner }}
-          github-api-url: ${{ github.api_url }}
 
   plan:
     needs:
@@ -245,7 +226,7 @@ jobs:
       - name: PR Comment for Plan
         uses: peter-evans/create-or-update-comment@v4
         with:
-          token: ${{ needs.setup.outputs.token }}
+          token: ${{ github.token }}
           issue-number: ${{ github.event.pull_request.number }}
           body: |
             <!-- Terragrunt PR Comment -->
@@ -438,7 +419,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: ${{ needs.plan-for-apply.outputs.artifact_name }}
-          github-token: ${{ needs.setup.outputs.token }}
+          github-token: ${{ github.token }}
           path: ${{ runner.temp }}/terragrunt-plan-artifact
 
       - name: Extract plan artifact
@@ -482,7 +463,7 @@ jobs:
           log_path: apply.log
           mode: apply
           run_outcome: ${{ steps.terragrunt_apply.outcome }}
-          github_token: ${{ needs.setup.outputs.token }}
+          github_token: ${{ github.token }}
           repo: ${{ github.repository }}
           run_id: ${{ github.run_id }}
           job_name: ${{ github.job }}
