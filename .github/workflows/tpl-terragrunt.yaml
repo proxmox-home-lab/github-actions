@@ -223,11 +223,22 @@ jobs:
           run_id: ${{ github.run_id }}
           job_name: ${{ github.job }}
 
+      - name: Find existing plan comment
+        id: find_comment
+        uses: peter-evans/find-comment@v3
+        with:
+          token: ${{ github.token }}
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-author: github-actions[bot]
+          body-includes: "<!-- Terragrunt PR Comment -->"
+
       - name: PR Comment for Plan
         uses: peter-evans/create-or-update-comment@v4
         with:
           token: ${{ github.token }}
+          comment-id: ${{ steps.find_comment.outputs.comment-id }}
           issue-number: ${{ github.event.pull_request.number }}
+          edit-mode: replace
           body: |
             <!-- Terragrunt PR Comment -->
             ${{ steps.plan_summarize.outputs.summary }}
