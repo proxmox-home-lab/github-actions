@@ -72,9 +72,9 @@ runs:
         step_url=$(
           gh run --repo "${{ inputs.repo }}" view "${{ inputs.run_id }}" --json jobs --jq \
           '.jobs[]
-           | select(.name | contains("${{ inputs.job_name }}"))
-           | .url, (.steps[] | select(.name == "'"$step_name"'") | "#step:\(.number):1")' \
-          | tr -d "\n"
+           | select(.steps[]?.name == "'"$step_name"'")
+           | .url + (.steps[] | select(.name == "'"$step_name"'") | "#step:\(.number):1")' \
+          | head -1
         )
 
         if [[ -z "$step_url" ]]; then

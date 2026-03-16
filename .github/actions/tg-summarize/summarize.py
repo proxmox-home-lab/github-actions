@@ -18,6 +18,8 @@ mode_label = mode.upper()
 
 ansi = re.compile(r"\x1b\[[0-9;]*m")
 
+stack_ctx_rx = re.compile(r"^(?:Planning|Applying|Validating) stack:\s+(?P<path>.+)$")
+
 rx = re.compile(
     r"^(?:\d{2}:\d{2}:\d{2}\.\d+\s+)?"
     r"(STDOUT|WARN|ERROR)\s+\[(?P<unit>[^\]]+)\]\s+(?:terraform|tofu):\s?(?P<msg>.*)$"
@@ -96,16 +98,16 @@ def overall_failed() -> bool:
     return run_outcome in ("failure", "cancelled")
 
 
-def parse_stack_info(unit: str):
+def parse_stack_info(unit: str, default_stack_path: str = ""):
     norm = unit.strip().lstrip("./")
     m = re.match(r"^(?P<stack>.+)/\.terragrunt-stack/(?P<unit>[^/]+)$", norm)
     if m:
         stack_path = m.group("stack")
         unit_name = m.group("unit")
     else:
-        stack_path = "(unknown)"
+        stack_path = default_stack_path or "(unknown)"
         unit_name = norm.split("/")[-1]
-    stack_name = Path(stack_path).name if stack_path != "(unknown)" else "(unknown)"
+    stack_name = Path(stack_path).name if stack_path not in ("(unknown)", "") else "(unknown)"
     return stack_name, stack_path, unit_name
 
 
@@ -125,9 +127,14 @@ def has_effective_change(icon: str, summary: str) -> bool:
 # -------------------------
 
 units = {}
+default_stack_path = ""
 
 for ln in log_path.read_text(errors="ignore").splitlines():
     ln = ansi.sub("", ln)
+    if not default_stack_path:
+        sc = stack_ctx_rx.match(ln)
+        if sc:
+            default_stack_path = sc.group("path").strip()
     m = rx.match(ln)
     if not m:
         continue
@@ -248,7 +255,7 @@ else:
 
     for unit in sorted(units.keys()):
         icon, summary, plan_block, status, warn_err = summarize_unit(units[unit])
-        stack_name, stack_path, short = parse_stack_info(unit)
+        stack_name, stack_path, short = parse_stack_info(unit, default_stack_path)
         if not has_effective_change(icon, summary):
             continue
         per_unit.append((stack_name, stack_path, short, icon, summary, plan_block, status, warn_err))
