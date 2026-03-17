@@ -46,6 +46,11 @@ inputs:
     required: false
     default: "60000"
 
+  stack_dir:
+    description: "Path to the terragrunt stack directory (e.g. iac/prod/core). Used as the stack context when it cannot be parsed from log output."
+    required: false
+    default: ""
+
 outputs:
   summary:
     value: ${{ steps.summarize.outputs.summary }}
@@ -93,4 +98,5 @@ runs:
           "${{ inputs.mode }}" \
           "${{ steps.stepurl.outputs.step_url }}" \
           "${{ inputs.run_outcome }}" \
-          "${{ inputs.max_chars }}" >> "$GITHUB_OUTPUT"
+          "${{ inputs.max_chars }}" \
+          "${{ inputs.stack_dir }}" >> "$GITHUB_OUTPUT"

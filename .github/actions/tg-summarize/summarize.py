@@ -8,6 +8,7 @@ mode = sys.argv[2].strip().lower()
 step_url = sys.argv[3].strip()
 run_outcome = sys.argv[4].strip().lower()
 limit = int(sys.argv[5])
+stack_dir_input = sys.argv[6].strip() if len(sys.argv) > 6 else ""
 
 if mode not in ("plan", "apply"):
     mode = "plan"
@@ -127,7 +128,11 @@ def has_effective_change(icon: str, summary: str) -> bool:
 # -------------------------
 
 units = {}
-default_stack_path = ""
+# Use the caller-supplied stack_dir as the baseline. The log-parser regex
+# (stack_ctx_rx) may still override it if Terragrunt emits a matching line,
+# but for Terragrunt v0.99.x stack run the regex typically doesn't match, so
+# the explicit input is the reliable source of truth.
+default_stack_path = stack_dir_input
 
 for ln in log_path.read_text(errors="ignore").splitlines():
     ln = ansi.sub("", ln)

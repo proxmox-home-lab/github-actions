@@ -197,6 +197,7 @@ jobs:
           repo: ${{ github.repository }}
           run_id: ${{ github.run_id }}
           job_name: ${{ github.job }}
+          stack_dir: ${{ matrix.stack_dir }}
 
       - name: Write plan summary to file
         if: ${{ always() }}
@@ -363,6 +364,7 @@ jobs:
           repo: ${{ github.repository }}
           run_id: ${{ github.run_id }}
           job_name: ${{ github.job }}
+          stack_dir: ${{ matrix.stack_dir }}
 
       - name: Write apply summary
         if: ${{ always() }}
