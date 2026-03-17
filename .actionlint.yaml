@@ -1,0 +1,9 @@
+# actionlint configuration for proxmox-home-lab/github-actions
+# https://github.com/rhysd/actionlint/blob/main/docs/config.md
+
+self-hosted-runner:
+  # Custom labels used by the Proxmox self-hosted runner.
+  # The runner runs inside Docker on the Proxmox host and has direct
+  # access to the Proxmox API, VyOS API, and VM SSH endpoints.
+  labels:
+    - proxmox

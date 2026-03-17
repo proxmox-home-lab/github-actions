@@ -1,0 +1,133 @@
+name: Packer Build Template
+
+on:
+  workflow_call:
+    inputs:
+      template:
+        description: "Template name to build (e.g. vyos, haproxy). Defaults to auto-detect from changed files."
+        required: false
+        type: string
+        default: ""
+      templates_dir:
+        description: "Root directory containing Packer template subdirectories."
+        required: false
+        type: string
+        default: "templates"
+      packer_version:
+        description: "Packer version to install."
+        required: false
+        type: string
+        default: "1.11.2"
+
+concurrency:
+  group: packer-${{ github.repository }}-${{ github.sha }}
+  cancel-in-progress: true
+
+env:
+  VAULT_VERSION: v1.20.2
+  VAULT_HELPER_VERSION: main
+  VAULT_ADDR: ${{ secrets.VAULT_ADDR }}
+  VAULT_AGENT_CONFIG: ${{ vars.VAULT_AGENT_CONFIG }}
+  VAULT_CLIENT_ID: ${{ secrets.VAULT_CLIENT_ID }}
+  VAULT_SECRET_ID: ${{ secrets.VAULT_SECRET_ID }}
+
+jobs:
+  # Detect which templates have changed (or use explicit input).
+  # Outputs a JSON matrix of template names to build.
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.detect.outputs.matrix }}
+      has_templates: ${{ steps.detect.outputs.has_templates }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect changed templates
+        id: detect
+        run: |
+          set -euo pipefail
+
+          templates_dir="${{ inputs.templates_dir }}"
+
+          if [[ -n "${{ inputs.template }}" ]]; then
+            # Explicit template requested (e.g. from workflow_dispatch)
+            templates=("${{ inputs.template }}")
+          elif [[ "${{ github.event_name }}" == "push" ]]; then
+            # Auto-detect from git diff
+            changed=$(git diff --name-only "HEAD~1" "HEAD")
+            mapfile -t all_templates < <(find "${templates_dir}" -maxdepth 1 -mindepth 1 -type d | xargs -I{} basename {} | sort)
+            templates=()
+            for t in "${all_templates[@]}"; do
+              if echo "${changed}" | grep -q "^${templates_dir}/${t}/"; then
+                templates+=("${t}")
+              fi
+            done
+          else
+            # Fallback: build all templates
+            mapfile -t templates < <(find "${templates_dir}" -maxdepth 1 -mindepth 1 -type d | xargs -I{} basename {} | sort)
+          fi
+
+          if [[ ${#templates[@]} -eq 0 ]]; then
+            echo "No templates to build."
+            echo "matrix={\"include\":[]}" >> "$GITHUB_OUTPUT"
+            echo "has_templates=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          matrix_items=""
+          for t in "${templates[@]}"; do
+            [[ -n "${matrix_items}" ]] && matrix_items+=","
+            matrix_items+="{\"template\":\"${t}\"}"
+          done
+
+          echo "matrix={\"include\":[${matrix_items}]}" >> "$GITHUB_OUTPUT"
+          echo "has_templates=true" >> "$GITHUB_OUTPUT"
+          echo "Templates to build: ${templates[*]}"
+
+  build:
+    needs: detect
+    if: ${{ needs.detect.outputs.has_templates == 'true' }}
+    strategy:
+      matrix: ${{ fromJSON(needs.detect.outputs.matrix) }}
+      fail-fast: false
+    # Packer must run on the self-hosted runner that has direct Proxmox API access.
+    runs-on: [self-hosted, proxmox]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Packer
+        uses: hashicorp/setup-packer@v3
+        with:
+          version: ${{ inputs.packer_version }}
+
+      - name: Get secrets from vault
+        uses: proxmox-home-lab/github-actions/.github/actions/vault-secrets@main
+        with:
+          vault_version: ${{ env.VAULT_VERSION }}
+          vault_helper_version: ${{ env.VAULT_HELPER_VERSION }}
+
+      - name: Init Packer plugins
+        run: |
+          set -euo pipefail
+          packer init "${{ inputs.templates_dir }}/${{ matrix.template }}"
+
+      - name: Validate template
+        run: |
+          set -euo pipefail
+          packer validate "${{ inputs.templates_dir }}/${{ matrix.template }}"
+
+      - name: Build template
+        run: |
+          set -euo pipefail
+          packer build "${{ inputs.templates_dir }}/${{ matrix.template }}"
+
+      - name: Write build summary
+        if: ${{ always() }}
+        run: |
+          if [[ "${{ job.status }}" == "success" ]]; then
+            echo "### ✓ Packer build succeeded: \`${{ matrix.template }}\`" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "### ✗ Packer build failed: \`${{ matrix.template }}\`" >> "$GITHUB_STEP_SUMMARY"
+          fi
