@@ -221,6 +221,9 @@ jobs:
     if: ${{ always() && inputs.action == 'plan' && needs.detect.outputs.has_stacks == 'true' }}
     runs-on: ubuntu-latest
     permissions:
+      # PR comments go through the issues API endpoint — issues: write is required.
+      # pull-requests: write alone is not sufficient for issue/PR comment creation.
+      issues: write
       pull-requests: write
     steps:
       - name: Download all plan summaries
