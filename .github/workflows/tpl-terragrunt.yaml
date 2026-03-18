@@ -278,6 +278,13 @@ jobs:
     runs-on: ${{ inputs.runner_label }}
     permissions:
       contents: read
+    env:
+      # Override the workflow-level TG_NON_INTERACTIVE=true for all steps in
+      # this job. When applying a saved plan file, Terragrunt must NOT inject
+      # -auto-approve into the tofu command — OpenTofu v1.11+ rejects the
+      # combination of a plan-file argument and -auto-approve, returning
+      # "Too many command line arguments".
+      TG_NON_INTERACTIVE: "false"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -345,15 +352,9 @@ jobs:
 
       - name: Run terragrunt apply
         id: terragrunt_apply
-        env:
-          # TG_NON_INTERACTIVE=true causes Terragrunt to inject -auto-approve into the
-          # tofu apply command. OpenTofu v1.11+ rejects -auto-approve when a plan file
-          # is the positional argument (the plan file is already the approval mechanism).
-          # Override to false and answer Terragrunt's stack-level (y/n) prompt via stdin.
-          TG_NON_INTERACTIVE: "false"
         run: |
           set -euo pipefail
-          echo "y" | terragrunt stack run --working-dir "${{ matrix.stack_dir }}" -- apply tfplan.binary 2>&1 | tee apply.log
+          terragrunt stack run --working-dir "${{ matrix.stack_dir }}" -- apply tfplan.binary 2>&1 | tee apply.log
 
       - name: Summarize terragrunt apply
         if: ${{ always() }}
