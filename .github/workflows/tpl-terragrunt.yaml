@@ -371,5 +371,7 @@ jobs:
 
       - name: Write apply summary
         if: ${{ always() }}
+        env:
+          SUMMARY: ${{ steps.apply_summarize.outputs.summary }}
         run: |
-          echo "${{ steps.apply_summarize.outputs.summary }}" >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' "$SUMMARY" >> "$GITHUB_STEP_SUMMARY"
