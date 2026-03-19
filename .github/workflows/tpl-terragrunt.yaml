@@ -301,11 +301,16 @@ jobs:
         run: |
           set -euo pipefail
 
-          pr_number=$(gh api "/repos/${{ github.repository }}/commits/${{ github.sha }}/pulls" \
-            --jq '.[0].number // empty')
+          # Extract PR number from the merge commit message — the /commits/{sha}/pulls
+          # API endpoint returns empty for merge commits because the merge commit itself
+          # is not part of the PR's commits, only of main's history.
+          #   Regular merge:  "Merge pull request #37 from owner/branch"
+          #   Squash merge:   "Some title (#37)"
+          commit_msg=$(git log -1 --format="%s" HEAD)
+          pr_number=$(echo "$commit_msg" | grep -oP '(?<=pull request #)\d+|(?<=\(#)\d+(?=\))' | head -1 || true)
 
           if [[ -z "$pr_number" ]]; then
-            echo "::error::Could not determine PR number for commit ${{ github.sha }}"
+            echo "::error::Could not determine PR number from commit message: ${commit_msg}"
             exit 1
           fi
 
