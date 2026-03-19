@@ -28,7 +28,7 @@ env:
   TG_LOG_LEVEL: error
   TG_NON_INTERACTIVE: true
   TF_STRICT_MODE: true
-  TG_VERSION: v0.99.2
+  TG_VERSION: v1.0.0-rc3
   TOFU_VERSION: v1.11.5
   VAULT_VERSION: v1.20.2
   VAULT_HELPER_VERSION: main
@@ -278,13 +278,6 @@ jobs:
     runs-on: ${{ inputs.runner_label }}
     permissions:
       contents: read
-    env:
-      # Override the workflow-level TG_NON_INTERACTIVE=true for all steps in
-      # this job. When applying a saved plan file, Terragrunt must NOT inject
-      # -auto-approve into the tofu command — OpenTofu v1.11+ rejects the
-      # combination of a plan-file argument and -auto-approve, returning
-      # "Too many command line arguments".
-      TG_NON_INTERACTIVE: "false"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
