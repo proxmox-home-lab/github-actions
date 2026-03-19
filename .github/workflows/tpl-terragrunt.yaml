@@ -214,6 +214,22 @@ jobs:
           path: plan-summary.md
           if-no-files-found: warn
 
+  # Gate job with a stable, non-matrix name used as the required status check.
+  # Runs whenever action=plan, regardless of whether stacks were detected.
+  # Fails if any plan matrix job failed; passes otherwise (including skip = no iac changes).
+  plan-gate:
+    needs: [detect, plan]
+    if: ${{ always() && inputs.action == 'plan' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assert plan succeeded
+        run: |
+          if [[ "${{ needs.plan.result }}" == "failure" ]]; then
+            echo "One or more plan jobs failed."
+            exit 1
+          fi
+          echo "Plan result: ${{ needs.plan.result }}"
+
   # Aggregates plan summaries from all matrix jobs into a single PR comment.
   # Runs even if some plan jobs failed so partial results are always visible.
   comment:
