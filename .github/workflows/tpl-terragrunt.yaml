@@ -159,7 +159,9 @@ jobs:
         id: terragrunt_plan
         run: |
           set -euo pipefail
-          terragrunt stack run --working-dir "${{ matrix.stack_dir }}" -- plan -out=tfplan.binary 2>&1 | tee plan.log
+          # --out-dir saves plan files to a deterministic path outside the cache dir.
+          # This avoids cache-hash mismatches between plan and apply runners.
+          terragrunt stack run --working-dir "${{ matrix.stack_dir }}" --out-dir "$GITHUB_WORKSPACE/plan-files" -- plan 2>&1 | tee plan.log
 
       - name: Stage plan artifact files
         if: ${{ success() }}
@@ -171,9 +173,7 @@ jobs:
           echo "artifact_name=${artifact_name}" >> "$GITHUB_OUTPUT"
 
           mkdir -p plan-artifact
-          cd "${{ matrix.stack_dir }}"
-          find . -type f -name 'tfplan.binary' -print0 | tar --null --files-from=- -czf "$OLDPWD/plan-artifact/terragrunt-plan-files.tgz"
-          cd "$OLDPWD"
+          tar -czf plan-artifact/terragrunt-plan-files.tgz -C "$GITHUB_WORKSPACE" plan-files/
           cp plan.log plan-artifact/plan.log
 
       - name: Upload plan artifact
@@ -341,13 +341,14 @@ jobs:
       - name: Extract plan files
         run: |
           set -euo pipefail
-          tar -xzf "$RUNNER_TEMP/terragrunt-plan-artifact/terragrunt-plan-files.tgz" -C "${{ matrix.stack_dir }}"
+          tar -xzf "$RUNNER_TEMP/terragrunt-plan-artifact/terragrunt-plan-files.tgz" -C "$GITHUB_WORKSPACE"
 
       - name: Run terragrunt apply
         id: terragrunt_apply
         run: |
           set -euo pipefail
-          terragrunt stack run --working-dir "${{ matrix.stack_dir }}" -- apply tfplan.binary 2>&1 | tee apply.log
+          # --out-dir tells Terragrunt where to find the plan files saved during the plan job.
+          terragrunt stack run --working-dir "${{ matrix.stack_dir }}" --out-dir "$GITHUB_WORKSPACE/plan-files" -- apply 2>&1 | tee apply.log
 
       - name: Summarize terragrunt apply
         if: ${{ always() }}
